@@ -49,10 +49,21 @@ distance, profile dimension A and profile dimension B separately, then assigns
 each measured value to `Length`, `Width` or `Height`. Suggested mappings are
 applied automatically per member type and remain independent of wall direction.
 
-Re-running the command replaces a single frame already linked to the selected
-host wall. If multiple linked frames already exist, the command skips that wall,
-marks the duplicate frame groups red and reports the duplicate count for manual
-resolution instead of creating more geometry.
+Re-running the command removes all frame groups already linked to each selected
+host wall, reports stale duplicates, and creates one canonical replacement.
+
+## Next-phase wishlist
+
+- replace the menu-only workflow with an editable wall-frame object that
+  recomputes when settings change
+- expose opening IDs from nominated Vectorworks door and window IDs
+- support per-opening lintel profile overrides
+- support multiple lintels over an opening
+- support explicit lintel offsets for the less common cases where a lintel sits
+  outside the wall framing envelope
+- calculate nogging rows from the available stud height rather than the overall
+  wall height, and remove occasional spare noggings near wall ends below the
+  top plate
 
 V0.1 accepts straight walls with linear start-to-end top and bottom heights.
 Walls with intermediate peak breaks, including complex fitted profiles, are
