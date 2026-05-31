@@ -1,0 +1,8 @@
+CompileFlags:
+  Add:
+    - -ISDKLib/Include
+    - -ISDKLib/Include/Kernel
+    - -ISDKLib/Include/OnlyMac
+    - -ISDKLib/Include/Interfaces
+    - -ISDKLib/Include/VWMM
+    - -ISource

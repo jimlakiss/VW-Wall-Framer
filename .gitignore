@@ -1,0 +1,9 @@
+.DS_Store
+*.lck
+CppPrototype/build/
+CppPrototype/DerivedData/
+CppPrototype/*.xcuserstate
+CppPrototype/iQsWallFramer.xcodeproj/project.xcworkspace/xcuserdata/
+CppPrototype/iQsWallFramer.xcodeproj/xcuserdata/
+probe-output/*.json
+VW Backup/
