@@ -25,6 +25,8 @@ group per selected straight wall. Each group contains:
 - gross long-point stock lengths for raked members before bevel cuts, reflected in both geometry and export records
 - component-centreline plate joins for selected endpoint-connected wall chains
 - lining-fixing corner studs on through walls, inset by the joined framing-component depth
+- overlap resolution for vertical framing: end studs, opening studs, trimmers, kings, corner studs, then regular studs
+- incrementing member names: `BP`, `TP`, `S`, `NOG`, `WS`, `LIN` and `DH`
 
 Generated frame groups and child members are assigned to the
 `iQs-Wall Framing` class. A later settings modal will allow the user to choose a

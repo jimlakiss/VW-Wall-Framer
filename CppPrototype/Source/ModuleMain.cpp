@@ -13,6 +13,7 @@
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <map>
 #include <random>
 #include <set>
 #include <sstream>
@@ -953,6 +954,14 @@ namespace
         gSDK->SetObjectName(result.group, frameName.c_str());
         gSDK->SetObjectClass(result.group, GeneratedClassID());
 
+        std::map<std::string, size_t> memberNameCounters;
+        auto nextMemberName = [&](const std::string& prefix) {
+            std::ostringstream name;
+            name << prefix << "-" << std::setw(3) << std::setfill('0')
+                 << ++memberNameCounters[prefix];
+            return name.str();
+        };
+
         auto addMember = [&](const std::string& id, const std::string& type,
                              double stationStart, double alongLength,
                              double zStart, double zHeight, double scheduleStation,
@@ -1019,15 +1028,35 @@ namespace
             TagExtruderSemanticMember(memberHandle, member);
         };
 
-        addSlopedPlate("PLATE-BOTTOM-001", "BOTTOM_PLATE",
+        addSlopedPlate(nextMemberName("BP"), "BOTTOM_PLATE",
                        wallProfile.bottomStartMm + kPlateHeightMm / 2.0,
                        wallProfile.bottomEndMm + kPlateHeightMm / 2.0);
         for (size_t i = 0; i < kTopPlateCount; ++i)
         {
             const double offset = (static_cast<double>(i) + 0.5) * kPlateHeightMm;
-            addSlopedPlate("PLATE-TOP-" + std::to_string(i + 1), "TOP_PLATE",
+            addSlopedPlate(nextMemberName("TP"), "TOP_PLATE",
                            wallProfile.topStartMm - offset, wallProfile.topEndMm - offset);
         }
+
+        struct PendingVerticalMember
+        {
+            std::string id;
+            std::string type;
+            double stationMm = 0.0;
+            double zStartMm = 0.0;
+            double zHeightMm = 0.0;
+            double memberLengthMm = 0.0;
+            int priority = 0;
+        };
+
+        std::vector<PendingVerticalMember> pendingVerticalMembers;
+        auto queueVerticalMember = [&](const std::string& id, const std::string& type,
+                                       double station, double zStart, double zHeight,
+                                       double memberLength, int priority) {
+            if (zHeight <= 0.0) { return; }
+            pendingVerticalMembers.push_back(
+                { id, type, station, zStart, zHeight, memberLength, priority });
+        };
 
         std::vector<double> stations;
         const double firstStudCenter = plateExtents.startStationMm + kStudWidthMm / 2.0;
@@ -1046,6 +1075,7 @@ namespace
 
         for (size_t i = 0; i < stations.size(); ++i)
         {
+            const bool endStud = i == 0 || i + 1 == stations.size();
             const double studBottom =
                 Interpolate(wallProfile.bottomStartMm, wallProfile.bottomEndMm,
                             stations[i], wallLength) + kPlateHeightMm;
@@ -1063,31 +1093,18 @@ namespace
                     const double openingRight = opening.stationMm + opening.widthMm / 2.0;
                     return studLeft < openingRight && studRight > openingLeft;
                 });
-            if (overlapsOpening) { continue; }
+            if (overlapsOpening && !endStud) { continue; }
 
-            std::ostringstream id;
-            id << "STUD-" << std::setw(3) << std::setfill('0') << (i + 1);
-            addMember(id.str(), "STUD", stations[i] - kStudWidthMm / 2.0, kStudWidthMm,
-                      GrossVerticalBottom(studBottom, kStudWidthMm, bottomSlope),
-                      GrossVerticalLength(clearStudHeight, kStudWidthMm,
-                                          bottomSlope, topSlope),
-                      stations[i],
-                      GrossVerticalLength(clearStudHeight, kStudWidthMm,
-                                          bottomSlope, topSlope),
-                      kStudWidthMm, component.depthMm,
-                      "Length", "Width", "Height");
-            ++result.studCount;
+            queueVerticalMember(
+                "", endStud ? "END_STUD" : "STUD", stations[i],
+                GrossVerticalBottom(studBottom, kStudWidthMm, bottomSlope),
+                GrossVerticalLength(clearStudHeight, kStudWidthMm, bottomSlope, topSlope),
+                GrossVerticalLength(clearStudHeight, kStudWidthMm, bottomSlope, topSlope),
+                endStud ? 100 : 50);
         }
 
-        size_t cornerStudIndex = 0;
         for (double station : plateExtents.cornerStudStationsMm)
         {
-            const bool duplicatesRegularStud =
-                std::any_of(stations.begin(), stations.end(), [&](double regularStation) {
-                    return std::abs(regularStation - station) < 0.001;
-                });
-            if (duplicatesRegularStud) { continue; }
-
             const double studBottom =
                 Interpolate(wallProfile.bottomStartMm, wallProfile.bottomEndMm,
                             station, wallLength) + kPlateHeightMm;
@@ -1098,19 +1115,11 @@ namespace
             const double clearStudHeight = studTop - studBottom;
             if (clearStudHeight <= 0.0) { continue; }
 
-            ++cornerStudIndex;
-            std::ostringstream id;
-            id << "CORNER-STUD-" << std::setw(3) << std::setfill('0') << cornerStudIndex;
-            addMember(id.str(), "CORNER_STUD", station - kStudWidthMm / 2.0, kStudWidthMm,
-                      GrossVerticalBottom(studBottom, kStudWidthMm, bottomSlope),
-                      GrossVerticalLength(clearStudHeight, kStudWidthMm,
-                                          bottomSlope, topSlope),
-                      station,
-                      GrossVerticalLength(clearStudHeight, kStudWidthMm,
-                                          bottomSlope, topSlope),
-                      kStudWidthMm, component.depthMm,
-                      "Length", "Width", "Height");
-            ++result.studCount;
+            queueVerticalMember(
+                "", "CORNER_STUD", station,
+                GrossVerticalBottom(studBottom, kStudWidthMm, bottomSlope),
+                GrossVerticalLength(clearStudHeight, kStudWidthMm, bottomSlope, topSlope),
+                GrossVerticalLength(clearStudHeight, kStudWidthMm, bottomSlope, topSlope), 60);
         }
 
         for (size_t i = 0; i < openings.size(); ++i)
@@ -1118,9 +1127,7 @@ namespace
             const WallOpening& opening = openings[i];
             const double openingLeft = opening.stationMm - opening.widthMm / 2.0;
             const double openingRight = opening.stationMm + opening.widthMm / 2.0;
-            const std::string prefix = opening.type + "-" + std::to_string(i + 1);
-
-            auto addOpeningStud = [&](const std::string& suffix, const std::string& type,
+            auto addOpeningStud = [&](const std::string& type,
                                       double stationStart, double scheduleStation,
                                       double requestedTop, double studTopSlope) {
                 const double studBottom =
@@ -1133,50 +1140,45 @@ namespace
                 const double studTop = std::min(requestedTop, availableTop);
                 const double height = studTop - studBottom;
                 if (height <= 0.0) { return; }
-                addMember(prefix + suffix, type, stationStart, kStudWidthMm,
-                          GrossVerticalBottom(studBottom, kStudWidthMm, bottomSlope),
-                          GrossVerticalLength(height, kStudWidthMm,
-                                              bottomSlope, studTopSlope),
-                          scheduleStation,
-                          GrossVerticalLength(height, kStudWidthMm,
-                                              bottomSlope, studTopSlope),
-                          kStudWidthMm, component.depthMm,
-                          "Length", "Width", "Height");
+                queueVerticalMember(
+                    "", type, scheduleStation,
+                    GrossVerticalBottom(studBottom, kStudWidthMm, bottomSlope),
+                    GrossVerticalLength(height, kStudWidthMm, bottomSlope, studTopSlope),
+                    GrossVerticalLength(height, kStudWidthMm, bottomSlope, studTopSlope),
+                    type == "TRIMMER_STUD" ? 80 : 70);
             };
 
-            addOpeningStud("-KING-L", "KING_STUD", openingLeft - 2.0 * kStudWidthMm,
+            addOpeningStud("KING_STUD", openingLeft - 2.0 * kStudWidthMm,
                            openingLeft - 1.5 * kStudWidthMm,
                            std::numeric_limits<double>::max(), topSlope);
-            addOpeningStud("-KING-R", "KING_STUD", openingRight + kStudWidthMm,
+            addOpeningStud("KING_STUD", openingRight + kStudWidthMm,
                            openingRight + 1.5 * kStudWidthMm,
                            std::numeric_limits<double>::max(), topSlope);
-            addOpeningStud("-TRIMMER-L", "TRIMMER_STUD", openingLeft - kStudWidthMm,
+            addOpeningStud("TRIMMER_STUD", openingLeft - kStudWidthMm,
                            openingLeft - kStudWidthMm / 2.0, opening.topMm, 0.0);
-            addOpeningStud("-TRIMMER-R", "TRIMMER_STUD", openingRight,
+            addOpeningStud("TRIMMER_STUD", openingRight,
                            openingRight + kStudWidthMm / 2.0, opening.topMm, 0.0);
 
             const double headerStart = openingLeft - kStudWidthMm;
             const double headerLength = opening.widthMm + 2.0 * kStudWidthMm;
-            addMember(prefix + "-HEADER", "HEADER", headerStart, headerLength,
+            addMember(nextMemberName(opening.type == "WINDOW" ? "LIN" : "DH"),
+                      "HEADER", headerStart, headerLength,
                       opening.topMm, kHeaderHeightMm, opening.stationMm,
                       headerLength, component.depthMm, kHeaderHeightMm,
                       "Height", "Length", "Width");
 
             if (opening.type == "WINDOW")
             {
-                addMember(prefix + "-SILL", "SILL", openingLeft, opening.widthMm,
+                addMember(nextMemberName("WS"), "SILL", openingLeft, opening.widthMm,
                           opening.bottomMm - kPlateHeightMm, kPlateHeightMm, opening.stationMm,
                           opening.widthMm, kPlateHeightMm, component.depthMm,
                           "Width", "Length", "Height");
             }
 
             const double upperCrippleBottom = opening.topMm + kHeaderHeightMm;
-            size_t crippleIndex = 0;
             for (double station : stations)
             {
                 if (station <= openingLeft || station >= openingRight) { continue; }
-                ++crippleIndex;
-                const std::string crippleSuffix = std::to_string(crippleIndex);
                 const double upperCrippleTop =
                     Interpolate(wallProfile.topStartMm, wallProfile.topEndMm,
                                 station, wallLength) -
@@ -1184,7 +1186,7 @@ namespace
                 if (upperCrippleTop > upperCrippleBottom)
                 {
                     const double height = upperCrippleTop - upperCrippleBottom;
-                    addMember(prefix + "-CRIPPLE-ABOVE-" + crippleSuffix, "CRIPPLE_STUD_ABOVE",
+                    addMember(nextMemberName("S"), "CRIPPLE_STUD_ABOVE",
                               station - kStudWidthMm / 2.0, kStudWidthMm,
                               upperCrippleBottom,
                               GrossVerticalLength(height, kStudWidthMm, 0.0, topSlope),
@@ -1200,7 +1202,7 @@ namespace
                 if (lowerCrippleTop > lowerCrippleBottom)
                 {
                     const double height = lowerCrippleTop - lowerCrippleBottom;
-                    addMember(prefix + "-CRIPPLE-BELOW-" + crippleSuffix, "CRIPPLE_STUD_BELOW",
+                    addMember(nextMemberName("S"), "CRIPPLE_STUD_BELOW",
                               station - kStudWidthMm / 2.0, kStudWidthMm,
                               GrossVerticalBottom(lowerCrippleBottom, kStudWidthMm, bottomSlope),
                               GrossVerticalLength(height, kStudWidthMm, bottomSlope, 0.0),
@@ -1210,6 +1212,37 @@ namespace
                               "Length", "Width", "Height");
                 }
             }
+        }
+
+        std::stable_sort(pendingVerticalMembers.begin(), pendingVerticalMembers.end(),
+                         [](const PendingVerticalMember& lhs,
+                            const PendingVerticalMember& rhs) {
+                             return lhs.priority > rhs.priority;
+                         });
+        std::vector<PendingVerticalMember> acceptedVerticalMembers;
+        for (const PendingVerticalMember& candidate : pendingVerticalMembers)
+        {
+            const double candidateLeft = candidate.stationMm - kStudWidthMm / 2.0;
+            const double candidateRight = candidate.stationMm + kStudWidthMm / 2.0;
+            const bool overlapsAccepted =
+                std::any_of(acceptedVerticalMembers.begin(), acceptedVerticalMembers.end(),
+                            [&](const PendingVerticalMember& accepted) {
+                                const double acceptedLeft =
+                                    accepted.stationMm - kStudWidthMm / 2.0;
+                                const double acceptedRight =
+                                    accepted.stationMm + kStudWidthMm / 2.0;
+                                return candidateLeft < acceptedRight - 0.001 &&
+                                       candidateRight > acceptedLeft + 0.001;
+                            });
+            if (overlapsAccepted) { continue; }
+
+            acceptedVerticalMembers.push_back(candidate);
+            addMember(nextMemberName("S"), candidate.type,
+                      candidate.stationMm - kStudWidthMm / 2.0, kStudWidthMm,
+                      candidate.zStartMm, candidate.zHeightMm, candidate.stationMm,
+                      candidate.memberLengthMm, kStudWidthMm, component.depthMm,
+                      "Length", "Width", "Height");
+            ++result.studCount;
         }
 
         struct VerticalEdge
@@ -1287,10 +1320,7 @@ namespace
                 if (intersectsOpening) { continue; }
 
                 ++noggingIndex;
-                std::ostringstream id;
-                id << "NOGGING-" << std::setw(2) << std::setfill('0') << row
-                   << "-" << std::setw(3) << std::setfill('0') << noggingIndex;
-                addMember(id.str(), "NOGGING", gapStart, gapLength,
+                addMember(nextMemberName("NOG"), "NOGGING", gapStart, gapLength,
                           noggingZ, kNoggingHeightMm, (gapStart + gapEnd) / 2.0,
                           gapLength, kNoggingHeightMm, component.depthMm,
                           "Width", "Length", "Height");
