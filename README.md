@@ -19,8 +19,8 @@ group per selected straight wall. Each group contains:
 - regular `45 mm` studs at `450 mm` centres, including end studs
 - opening-aware jamb and trimmer studs for inserted doors and windows
 - tagged extrude lintels over inserted doors and windows
-- optional stud-profile ledgers above and beneath lintels over a configurable
-  height, defaulting to `120 mm`
+- optional per-opening stud-profile ledgers above and beneath lintels over a
+  configurable height, defaulting to `120 mm`
 - scrollable per-opening lintel ID, count and profile overrides, keyed
   internally and labelled with the visible Vectorworks window or door ID
 - verbatim user-nominated lintel IDs, with run-wide automatic numbering when no
@@ -31,7 +31,8 @@ group per selected straight wall. Each group contains:
   generated framing solids
 - tagged extrude sill members under inserted windows
 - jack studs above lintels and below raised sills/openings, with lintel-height-aware
-  upper termination and an override to continue them to the lintel underside
+  upper termination and a persisted per-opening override to continue them to
+  the lintel underside
 - opening-aware nogging rows fitted between vertical members from the clear stud
   zone at 1350 mm centres, staggered by 45 mm
 - short noggings retained inside intentional corner-stud clusters to represent
@@ -78,6 +79,8 @@ host wall, reports stale duplicates, and creates one canonical replacement.
 - support explicit lintel offsets for the less common cases where a lintel sits
   outside the wall framing envelope
 - allow materials to be allocated to framing members
+- add Advanced-tab links for editing generated classes and allocating materials
+  by framing member type
 
 V0.1 accepts straight walls with linear start-to-end top and bottom heights.
 Walls with intermediate peak breaks, including complex fitted profiles, are

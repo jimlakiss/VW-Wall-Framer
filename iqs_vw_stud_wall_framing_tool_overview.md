@@ -547,8 +547,9 @@ Implementation options:
   in the current prototype;
 - assign colours by generated framing class; implemented in the current
   prototype with a default class palette inherited by the generated solids;
-- allow materials to be allocated to framing members;
-- optionally add window/door ledgers above and beneath lintels over a
+- allow materials to be allocated to framing members, with Advanced-tab links
+  for editing generated classes and allocating materials by member type;
+- optionally add per-opening window/door ledgers above and beneath lintels over a
   configurable height, defaulting to `120 mm`. The
   ledger is generally stud-sized, installed length-long by height-short, with
   its underside governed by the window or door head height. Lintel support
@@ -558,7 +559,9 @@ Implementation options:
   top when the total depth is at least half the stud width, including built-up
   lintels such as `2 x 32 mm = 64 mm`; implemented in the current prototype for
   the nominated default lintel profile. A settings override can continue upper
-  jack studs to the lintel underside;
+  jack studs to the lintel underside. The upper and lower ledger choices and
+  the jack-stud overrun choice are persisted per opening in the current
+  prototype;
 - expose a scrollable per-opening lintel table in the Openings tab, keyed
   internally and labelled with the visible Vectorworks window or door ID. The
   lintel ID, built-up lintel count and profile dimensions can be overridden;

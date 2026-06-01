@@ -165,6 +165,12 @@ namespace
         }
     }
 
+    bool BoolOrDefault(const TXString& value, bool fallback)
+    {
+        if (value.IsEmpty()) { return fallback; }
+        return value.EqualNoCase("true") || value.EqualNoCase("yes") || value == "1";
+    }
+
     std::string Bool(bool value)
     {
         return value ? "true" : "false";
@@ -240,6 +246,9 @@ namespace
         EnsureTextField(format, "lintel_count", "1");
         EnsureTextField(format, "lintel_width_mm");
         EnsureTextField(format, "lintel_height_mm");
+        EnsureTextField(format, "lower_ledger");
+        EnsureTextField(format, "upper_ledger");
+        EnsureTextField(format, "continue_jack_studs_to_lintel_underside");
         EnsureTextField(format, "last_framed_unix");
     }
 
@@ -613,6 +622,9 @@ namespace
         double lintelHeightMm = 0.0;
         Sint32 lintelCount = 1;
         std::string lintelID;
+        bool lowerLedger = false;
+        bool upperLedger = false;
+        bool continueJackStudsToLintelUnderside = false;
     };
 
     struct OpeningLintelOverride
@@ -621,6 +633,9 @@ namespace
         double heightMm = 0.0;
         Sint32 count = 1;
         std::string lintelID;
+        bool lowerLedger = false;
+        bool upperLedger = false;
+        bool continueJackStudsToLintelUnderside = false;
     };
 
     std::map<std::string, OpeningLintelOverride> gOpeningLintelOverrides;
@@ -662,6 +677,11 @@ namespace
                                double bottomSlope)
     {
         return centrelineBottomMm - memberWidthMm * std::abs(bottomSlope) / 2.0;
+    }
+
+    double SlopedMemberVerticalHeight(double memberHeightMm, double slope)
+    {
+        return memberHeightMm * std::sqrt(1.0 + slope * slope);
     }
 
     double EntityOffsetZ(MCObjectHandle object)
@@ -1024,25 +1044,74 @@ namespace
     {
         if (alongLengthMm <= 0.0 || depthMm <= 0.0 || plateHeightMm <= 0.0) { return nullptr; }
 
-        const auto start2D = WallPoint(wallStart, along, normal, stationStartMm, centerOffsetMm);
-        const auto end2D =
-            WallPoint(wallStart, along, normal, stationStartMm + alongLengthMm, centerOffsetMm);
         const double halfDepth = depthMm / 2.0;
-        const double halfHeight = plateHeightMm / 2.0;
+        const double slope = (axisEndZMm - axisStartZMm) / alongLengthMm;
+        const double halfVerticalHeight =
+            SlopedMemberVerticalHeight(plateHeightMm, slope) / 2.0;
+        const auto startFace =
+            WallPoint(wallStart, along, normal, stationStartMm, centerOffsetMm - halfDepth);
+        const auto endFace =
+            WallPoint(wallStart, along, normal, stationStartMm + alongLengthMm,
+                      centerOffsetMm - halfDepth);
 
-        VWFC::Math::VWPolygon2D profile;
-        profile.AddVertex(VWFC::Math::VWPoint2D(-halfDepth, -halfHeight));
-        profile.AddVertex(VWFC::Math::VWPoint2D(halfDepth, -halfHeight));
-        profile.AddVertex(VWFC::Math::VWPoint2D(halfDepth, halfHeight));
-        profile.AddVertex(VWFC::Math::VWPoint2D(-halfDepth, halfHeight));
+        VWFC::Math::VWPolygon3D profile;
+        profile.AddVertex(
+            VWFC::Math::VWPoint3D(startFace.x, startFace.y, axisStartZMm - halfVerticalHeight));
+        profile.AddVertex(
+            VWFC::Math::VWPoint3D(startFace.x, startFace.y, axisStartZMm + halfVerticalHeight));
+        profile.AddVertex(
+            VWFC::Math::VWPoint3D(endFace.x, endFace.y, axisEndZMm + halfVerticalHeight));
+        profile.AddVertex(
+            VWFC::Math::VWPoint3D(endFace.x, endFace.y, axisEndZMm - halfVerticalHeight));
         profile.SetClosed(true);
 
-        VWFC::VWObjects::VWPolygon2DObj profileObj(profile);
-        VWFC::VWObjects::VWExtrudeObj member(
-            profileObj,
-            VWFC::Math::VWPoint3D(start2D.x, start2D.y, axisStartZMm),
-            VWFC::Math::VWPoint3D(end2D.x, end2D.y, axisEndZMm),
-            VWFC::Math::VWPoint3D(0.0, 0.0, 1.0));
+        VWFC::VWObjects::VWExtrudeObj member(profile, depthMm);
+        MCObjectHandle handle = member;
+        group.AddObject(handle);
+        gSDK->SetObjectClass(handle, GeneratedMemberClassID(memberType));
+        gSDK->SetFColorsByClass(handle);
+        gSDK->SetFPatByClass(handle);
+        gSDK->ResetObject(handle);
+        return handle;
+    }
+
+    MCObjectHandle AddVerticalMember(VWFC::VWObjects::VWGroupObj& group,
+                                     const VWFC::Math::VWPoint2D& wallStart,
+                                     const VWFC::Math::VWPoint2D& along,
+                                     const VWFC::Math::VWPoint2D& normal,
+                                     double stationMm, double memberWidthMm,
+                                     double centerOffsetMm, double depthMm,
+                                     double centrelineBottomMm, double centrelineTopMm,
+                                     double bottomSlope, double topSlope,
+                                     const std::string& memberType)
+    {
+        if (memberWidthMm <= 0.0 || depthMm <= 0.0 ||
+            centrelineTopMm <= centrelineBottomMm)
+        {
+            return nullptr;
+        }
+
+        const double halfWidth = memberWidthMm / 2.0;
+        const double halfDepth = depthMm / 2.0;
+        const auto leftFace =
+            WallPoint(wallStart, along, normal, stationMm - halfWidth,
+                      centerOffsetMm - halfDepth);
+        const auto rightFace =
+            WallPoint(wallStart, along, normal, stationMm + halfWidth,
+                      centerOffsetMm - halfDepth);
+
+        VWFC::Math::VWPolygon3D profile;
+        profile.AddVertex(VWFC::Math::VWPoint3D(
+            leftFace.x, leftFace.y, centrelineBottomMm - bottomSlope * halfWidth));
+        profile.AddVertex(VWFC::Math::VWPoint3D(
+            leftFace.x, leftFace.y, centrelineTopMm - topSlope * halfWidth));
+        profile.AddVertex(VWFC::Math::VWPoint3D(
+            rightFace.x, rightFace.y, centrelineTopMm + topSlope * halfWidth));
+        profile.AddVertex(VWFC::Math::VWPoint3D(
+            rightFace.x, rightFace.y, centrelineBottomMm + bottomSlope * halfWidth));
+        profile.SetClosed(true);
+
+        VWFC::VWObjects::VWExtrudeObj member(profile, depthMm);
         MCObjectHandle handle = member;
         group.AddObject(handle);
         gSDK->SetObjectClass(handle, GeneratedMemberClassID(memberType));
@@ -1148,6 +1217,10 @@ namespace
             const TXString storedHeight = GetRecordText(openingRecord, "lintel_height_mm");
             const TXString storedCount = GetRecordText(openingRecord, "lintel_count");
             const TXString storedID = GetRecordText(openingRecord, "lintel_id");
+            const TXString storedLowerLedger = GetRecordText(openingRecord, "lower_ledger");
+            const TXString storedUpperLedger = GetRecordText(openingRecord, "upper_ledger");
+            const TXString storedJackStudOverrun =
+                GetRecordText(openingRecord, "continue_jack_studs_to_lintel_underside");
             const double persistedWidth =
                 PositiveDoubleOrDefault(storedWidth, gSettings.headerWidthMm);
             const double persistedHeight =
@@ -1169,6 +1242,19 @@ namespace
                 overrideIt != gOpeningLintelOverrides.end()
                     ? overrideIt->second.lintelID
                     : storedID.GetCharPtr();
+            opening.lowerLedger =
+                overrideIt != gOpeningLintelOverrides.end()
+                    ? overrideIt->second.lowerLedger
+                    : BoolOrDefault(storedLowerLedger, gSettings.generateLedgers);
+            opening.upperLedger =
+                overrideIt != gOpeningLintelOverrides.end()
+                    ? overrideIt->second.upperLedger
+                    : BoolOrDefault(storedUpperLedger, gSettings.generateUpperLedgers);
+            opening.continueJackStudsToLintelUnderside =
+                overrideIt != gOpeningLintelOverrides.end()
+                    ? overrideIt->second.continueJackStudsToLintelUnderside
+                    : BoolOrDefault(storedJackStudOverrun,
+                                    gSettings.continueJackStudsToLintelUnderside);
             const bool duplicate = std::any_of(openings.begin(), openings.end(),
                                                [&](const WallOpening& existing) {
                 return existing.type == opening.type &&
@@ -1296,21 +1382,19 @@ namespace
                           (trimmedAxisEndZ - trimmedAxisStartZ) *
                               (trimmedAxisEndZ - trimmedAxisStartZ));
             if (axisLength <= 0.0) { return; }
-            const double grossLength =
-                axisLength + kPlateHeightMm *
-                                 std::abs(trimmedAxisEndZ - trimmedAxisStartZ) / axisLength;
             const double slope =
                 (trimmedAxisEndZ - trimmedAxisStartZ) / alongLength;
-            const double stationExtension =
-                kPlateHeightMm * std::abs(slope) / (2.0 * (1.0 + slope * slope));
-            const double grossStationStart = stationStart - stationExtension;
-            const double grossStationEnd = stationEnd + stationExtension;
+            const double grossLength =
+                std::sqrt(alongLength * alongLength +
+                          (std::abs(trimmedAxisEndZ - trimmedAxisStartZ) +
+                           SlopedMemberVerticalHeight(kPlateHeightMm, slope)) *
+                              (std::abs(trimmedAxisEndZ - trimmedAxisStartZ) +
+                               SlopedMemberVerticalHeight(kPlateHeightMm, slope)));
             MCObjectHandle memberHandle =
                 AddSlopedPlateMember(group, start, along, normal,
-                                     grossStationStart, grossStationEnd - grossStationStart,
+                                     stationStart, alongLength,
                                      component.centerOffsetMm, gSettings.plateWidthMm,
-                                     Interpolate(axisStartZ, axisEndZ, grossStationStart, wallLength),
-                                     Interpolate(axisStartZ, axisEndZ, grossStationEnd, wallLength),
+                                     trimmedAxisStartZ, trimmedAxisEndZ,
                                      kPlateHeightMm, type);
             if (!memberHandle) { return; }
 
@@ -1323,17 +1407,47 @@ namespace
             TagExtruderSemanticMember(memberHandle, member);
         };
 
+        auto addVerticalMember = [&](const std::string& id, const std::string& type,
+                                     double station, double centrelineBottom,
+                                     double centrelineTop, double memberBottomSlope,
+                                     double memberTopSlope) {
+            const double centrelineLength = centrelineTop - centrelineBottom;
+            if (centrelineLength <= 0.0) { return; }
+            MCObjectHandle memberHandle =
+                AddVerticalMember(group, start, along, normal, station, kStudWidthMm,
+                                  component.centerOffsetMm, gSettings.studDepthMm,
+                                  centrelineBottom, centrelineTop,
+                                  memberBottomSlope, memberTopSlope, type);
+            if (!memberHandle) { return; }
+
+            const double grossBottom =
+                GrossVerticalBottom(centrelineBottom, kStudWidthMm, memberBottomSlope);
+            const double grossLength =
+                GrossVerticalLength(centrelineLength, kStudWidthMm,
+                                    memberBottomSlope, memberTopSlope);
+            FrameMember member{ id, type, grossLength, kStudWidthMm, gSettings.studDepthMm,
+                                station, grossBottom, grossBottom + grossLength,
+                                grossLength, kStudWidthMm, gSettings.studDepthMm,
+                                "Length", "Width", "Height" };
+            result.members.push_back(member);
+            TagExtruderSemanticMember(memberHandle, member);
+        };
+
         for (size_t i = 0; i < kBottomPlateCount; ++i)
         {
-            const double offset = (static_cast<double>(i) + 0.5) * kPlateHeightMm;
+            const double offset =
+                (static_cast<double>(i) + 0.5) *
+                SlopedMemberVerticalHeight(kPlateHeightMm, bottomSlope);
             std::vector<std::pair<double, double>> excludedIntervals;
             for (const WallOpening& opening : openings)
             {
                 const double plateBottom =
                     Interpolate(wallProfile.bottomStartMm, wallProfile.bottomEndMm,
                                 opening.stationMm, wallLength) +
-                    static_cast<double>(i) * kPlateHeightMm;
-                const double plateTop = plateBottom + kPlateHeightMm;
+                    static_cast<double>(i) *
+                        SlopedMemberVerticalHeight(kPlateHeightMm, bottomSlope);
+                const double plateTop =
+                    plateBottom + SlopedMemberVerticalHeight(kPlateHeightMm, bottomSlope);
                 if (opening.bottomMm >= plateTop - 0.001 ||
                     opening.topMm <= plateBottom + 0.001)
                 {
@@ -1390,7 +1504,9 @@ namespace
         }
         for (size_t i = 0; i < kTopPlateCount; ++i)
         {
-            const double offset = (static_cast<double>(i) + 0.5) * kPlateHeightMm;
+            const double offset =
+                (static_cast<double>(i) + 0.5) *
+                SlopedMemberVerticalHeight(kPlateHeightMm, topSlope);
             addSlopedPlate(nextMemberName(gSettings.topPlatePrefix), "TOP_PLATE",
                            plateExtents.startStationMm, plateExtents.endStationMm,
                            wallProfile.topStartMm - offset, wallProfile.topEndMm - offset);
@@ -1404,6 +1520,10 @@ namespace
             double zStartMm = 0.0;
             double zHeightMm = 0.0;
             double memberLengthMm = 0.0;
+            double centrelineBottomMm = 0.0;
+            double centrelineTopMm = 0.0;
+            double bottomSlope = 0.0;
+            double topSlope = 0.0;
             int priority = 0;
         };
 
@@ -1414,13 +1534,13 @@ namespace
         };
 
         auto lowerLedgerHeightForOpening = [&](const WallOpening& opening) {
-            return gSettings.generateLedgers &&
+            return opening.lowerLedger &&
                            opening.lintelHeightMm > gSettings.ledgerTriggerHeightMm
                        ? kStudWidthMm
                        : 0.0;
         };
         auto upperLedgerHeightForOpening = [&](const WallOpening& opening) {
-            return gSettings.generateUpperLedgers &&
+            return opening.upperLedger &&
                            opening.lintelHeightMm > gSettings.ledgerTriggerHeightMm
                        ? kStudWidthMm
                        : 0.0;
@@ -1437,7 +1557,7 @@ namespace
         auto verticalBottomAboveLintel = [&](const WallOpening& opening) {
             return upperLedgerHeightForOpening(opening) > 0.0
                        ? lintelAssemblyTopForOpening(opening)
-                       : gSettings.continueJackStudsToLintelUnderside ||
+                       : opening.continueJackStudsToLintelUnderside ||
                            opening.lintelHeightMm < kStudWidthMm / 2.0
                              ? lintelBottomForOpening(opening)
                              : lintelTopForOpening(opening);
@@ -1533,20 +1653,33 @@ namespace
 
         std::vector<PendingVerticalMember> pendingVerticalMembers;
         auto queueVerticalMember = [&](const std::string& id, const std::string& type,
-                                       double station, double zStart, double zHeight,
-                                       double memberLength, int priority,
+                                       double station, double centrelineBottom,
+                                       double centrelineTop, double memberBottomSlope,
+                                       double memberTopSlope, int priority,
                                        size_t ignoredOpeningIndex =
                                            std::numeric_limits<size_t>::max()) {
-            if (zHeight <= 0.0) { return; }
-            const double memberLengthScale = memberLength / zHeight;
+            if (centrelineTop <= centrelineBottom) { return; }
             for (const VerticalSegment& segment :
-                 splitVerticalRangeForOpenings(station, kStudWidthMm, zStart,
-                                               zStart + zHeight, ignoredOpeningIndex))
+                 splitVerticalRangeForOpenings(station, kStudWidthMm, centrelineBottom,
+                                               centrelineTop, ignoredOpeningIndex))
             {
-                const double segmentHeight = segment.topMm - segment.bottomMm;
+                const double segmentBottomSlope =
+                    std::abs(segment.bottomMm - centrelineBottom) < 0.001
+                        ? memberBottomSlope
+                        : 0.0;
+                const double segmentTopSlope =
+                    std::abs(segment.topMm - centrelineTop) < 0.001
+                        ? memberTopSlope
+                        : 0.0;
+                const double grossBottom =
+                    GrossVerticalBottom(segment.bottomMm, kStudWidthMm, segmentBottomSlope);
+                const double grossLength =
+                    GrossVerticalLength(segment.topMm - segment.bottomMm, kStudWidthMm,
+                                        segmentBottomSlope, segmentTopSlope);
                 pendingVerticalMembers.push_back(
-                    { id, type, station, segment.bottomMm, segmentHeight,
-                      segmentHeight * memberLengthScale, priority });
+                    { id, type, station, grossBottom, grossLength, grossLength,
+                      segment.bottomMm, segment.topMm,
+                      segmentBottomSlope, segmentTopSlope, priority });
             }
         };
 
@@ -1557,13 +1690,14 @@ namespace
             double topMm = 0.0;
         };
         std::vector<DirectJackSegment> directJackSegments;
-        auto addSegmentedJack = [&](double station, double zStart, double zHeight,
+        auto addSegmentedJack = [&](double station, double centrelineBottom,
+                                    double centrelineTop, double memberBottomSlope,
+                                    double memberTopSlope,
                                     size_t ignoredOpeningIndex) {
             for (const VerticalSegment& segment :
-                 splitVerticalRangeForOpenings(station, kStudWidthMm, zStart,
-                                               zStart + zHeight, ignoredOpeningIndex))
+                 splitVerticalRangeForOpenings(station, kStudWidthMm, centrelineBottom,
+                                               centrelineTop, ignoredOpeningIndex))
             {
-                const double segmentHeight = segment.topMm - segment.bottomMm;
                 const bool overlapsExisting =
                     std::any_of(directJackSegments.begin(), directJackSegments.end(),
                                 [&](const DirectJackSegment& existing) {
@@ -1574,11 +1708,15 @@ namespace
                                 });
                 if (gSettings.resolveStudOverlaps && overlapsExisting) { continue; }
 
-                addMember(nextMemberName(MemberPrefix("JACK_STUD")), "JACK_STUD",
-                          station - kStudWidthMm / 2.0, kStudWidthMm,
-                          segment.bottomMm, segmentHeight, gSettings.studDepthMm,
-                          station, segmentHeight, kStudWidthMm, gSettings.studDepthMm,
-                          "Length", "Width", "Height");
+                addVerticalMember(
+                    nextMemberName(MemberPrefix("JACK_STUD")), "JACK_STUD", station,
+                    segment.bottomMm, segment.topMm,
+                    std::abs(segment.bottomMm - centrelineBottom) < 0.001
+                        ? memberBottomSlope
+                        : 0.0,
+                    std::abs(segment.topMm - centrelineTop) < 0.001
+                        ? memberTopSlope
+                        : 0.0);
                 directJackSegments.push_back({ station, segment.bottomMm, segment.topMm });
             }
         };
@@ -1604,11 +1742,13 @@ namespace
             const double studBottom =
                 Interpolate(wallProfile.bottomStartMm, wallProfile.bottomEndMm,
                             stations[i], wallLength) +
-                static_cast<double>(kBottomPlateCount) * kPlateHeightMm;
+                static_cast<double>(kBottomPlateCount) *
+                    SlopedMemberVerticalHeight(kPlateHeightMm, bottomSlope);
             const double studTop =
                 Interpolate(wallProfile.topStartMm, wallProfile.topEndMm,
                             stations[i], wallLength) -
-                static_cast<double>(kTopPlateCount) * kPlateHeightMm;
+                static_cast<double>(kTopPlateCount) *
+                    SlopedMemberVerticalHeight(kPlateHeightMm, topSlope);
             const double clearStudHeight = studTop - studBottom;
             if (clearStudHeight <= 0.0) { continue; }
             const bool overlapsOpening =
@@ -1623,9 +1763,7 @@ namespace
 
             queueVerticalMember(
                 "", endStud ? "END_STUD" : "STUD", stations[i],
-                GrossVerticalBottom(studBottom, kStudWidthMm, bottomSlope),
-                GrossVerticalLength(clearStudHeight, kStudWidthMm, bottomSlope, topSlope),
-                GrossVerticalLength(clearStudHeight, kStudWidthMm, bottomSlope, topSlope),
+                studBottom, studTop, bottomSlope, topSlope,
                 endStud ? 100 : 50);
         }
 
@@ -1634,19 +1772,19 @@ namespace
             const double studBottom =
                 Interpolate(wallProfile.bottomStartMm, wallProfile.bottomEndMm,
                             station, wallLength) +
-                static_cast<double>(kBottomPlateCount) * kPlateHeightMm;
+                static_cast<double>(kBottomPlateCount) *
+                    SlopedMemberVerticalHeight(kPlateHeightMm, bottomSlope);
             const double studTop =
                 Interpolate(wallProfile.topStartMm, wallProfile.topEndMm,
                             station, wallLength) -
-                static_cast<double>(kTopPlateCount) * kPlateHeightMm;
+                static_cast<double>(kTopPlateCount) *
+                    SlopedMemberVerticalHeight(kPlateHeightMm, topSlope);
             const double clearStudHeight = studTop - studBottom;
             if (clearStudHeight <= 0.0) { continue; }
 
             queueVerticalMember(
                 "", "CORNER_STUD", station,
-                GrossVerticalBottom(studBottom, kStudWidthMm, bottomSlope),
-                GrossVerticalLength(clearStudHeight, kStudWidthMm, bottomSlope, topSlope),
-                GrossVerticalLength(clearStudHeight, kStudWidthMm, bottomSlope, topSlope), 60);
+                studBottom, studTop, bottomSlope, topSlope, 60);
         }
 
         for (size_t i = 0; i < openings.size(); ++i)
@@ -1660,19 +1798,19 @@ namespace
                 const double studBottom =
                     Interpolate(wallProfile.bottomStartMm, wallProfile.bottomEndMm,
                                 scheduleStation, wallLength) +
-                    static_cast<double>(kBottomPlateCount) * kPlateHeightMm;
+                    static_cast<double>(kBottomPlateCount) *
+                        SlopedMemberVerticalHeight(kPlateHeightMm, bottomSlope);
                 const double availableTop =
                     Interpolate(wallProfile.topStartMm, wallProfile.topEndMm,
                                 scheduleStation, wallLength) -
-                    static_cast<double>(kTopPlateCount) * kPlateHeightMm;
+                    static_cast<double>(kTopPlateCount) *
+                        SlopedMemberVerticalHeight(kPlateHeightMm, topSlope);
                 const double studTop = std::min(requestedTop, availableTop);
                 const double height = studTop - studBottom;
                 if (height <= 0.0) { return; }
                 queueVerticalMember(
                     "", type, scheduleStation,
-                    GrossVerticalBottom(studBottom, kStudWidthMm, bottomSlope),
-                    GrossVerticalLength(height, kStudWidthMm, bottomSlope, studTopSlope),
-                    GrossVerticalLength(height, kStudWidthMm, bottomSlope, studTopSlope),
+                    studBottom, studTop, bottomSlope, studTopSlope,
                     type == "TRIMMER_STUD" ? 80 : 70, i);
             };
 
@@ -1774,14 +1912,14 @@ namespace
                 const double localLowerJackBottom =
                     Interpolate(wallProfile.bottomStartMm, wallProfile.bottomEndMm,
                                 station, wallLength) +
-                    static_cast<double>(kBottomPlateCount) * kPlateHeightMm;
+                    static_cast<double>(kBottomPlateCount) *
+                        SlopedMemberVerticalHeight(kPlateHeightMm, bottomSlope);
                 if (lowerJackTop <= localLowerJackBottom) { return; }
 
                 const double height = lowerJackTop - localLowerJackBottom;
                 addSegmentedJack(
-                    station,
-                    GrossVerticalBottom(localLowerJackBottom, kStudWidthMm, bottomSlope),
-                    GrossVerticalLength(height, kStudWidthMm, bottomSlope, 0.0), i);
+                    station, localLowerJackBottom, lowerJackTop,
+                    bottomSlope, 0.0, i);
                 lowerJackStations.push_back(station);
             };
 
@@ -1806,13 +1944,14 @@ namespace
                 const double upperJackTop =
                     Interpolate(wallProfile.topStartMm, wallProfile.topEndMm,
                                 adjustedStation, wallLength) -
-                    static_cast<double>(kTopPlateCount) * kPlateHeightMm;
+                    static_cast<double>(kTopPlateCount) *
+                        SlopedMemberVerticalHeight(kPlateHeightMm, topSlope);
                 if (upperJackTop > upperJackBottom)
                 {
                     const double height = upperJackTop - upperJackBottom;
                     addSegmentedJack(
-                        adjustedStation, upperJackBottom,
-                        GrossVerticalLength(height, kStudWidthMm, 0.0, topSlope), i);
+                        adjustedStation, upperJackBottom, upperJackTop,
+                        0.0, topSlope, i);
                 }
                 addLowerJack(adjustedStation);
             }
@@ -1847,12 +1986,10 @@ namespace
             if (gSettings.resolveStudOverlaps && overlapsAccepted) { continue; }
 
             acceptedVerticalMembers.push_back(candidate);
-            addMember(nextMemberName(MemberPrefix(candidate.type)), candidate.type,
-                      candidate.stationMm - kStudWidthMm / 2.0, kStudWidthMm,
-                      candidate.zStartMm, candidate.zHeightMm, gSettings.studDepthMm,
-                      candidate.stationMm,
-                      candidate.memberLengthMm, kStudWidthMm, gSettings.studDepthMm,
-                      "Length", "Width", "Height");
+            addVerticalMember(nextMemberName(MemberPrefix(candidate.type)), candidate.type,
+                              candidate.stationMm, candidate.centrelineBottomMm,
+                              candidate.centrelineTopMm, candidate.bottomSlope,
+                              candidate.topSlope);
             ++result.studCount;
         }
 
@@ -1954,7 +2091,10 @@ namespace
         const double highestStudHeight =
             std::max(wallProfile.topStartMm - wallProfile.bottomStartMm,
                      wallProfile.topEndMm - wallProfile.bottomEndMm) -
-            static_cast<double>(kBottomPlateCount + kTopPlateCount) * kPlateHeightMm;
+            static_cast<double>(kBottomPlateCount) *
+                SlopedMemberVerticalHeight(kPlateHeightMm, bottomSlope) -
+            static_cast<double>(kTopPlateCount) *
+                SlopedMemberVerticalHeight(kPlateHeightMm, topSlope);
         const size_t noggingRowCount =
             gSettings.generateNoggings && highestStudHeight > 0.0
                 ? static_cast<size_t>(
@@ -2411,7 +2551,10 @@ namespace
         LintelID,
         LintelCount,
         LintelWidth,
-        LintelHeight
+        LintelHeight,
+        LowerLedger,
+        UpperLedger,
+        JackStudOverrun
     };
 
     class CFramingSettingsDialog : public VWDialog
@@ -2481,12 +2624,18 @@ namespace
         {
             gOpeningLintelOverrides[opening.key] =
                 { opening.lintelWidthMm, opening.lintelHeightMm,
-                  opening.lintelCount, opening.lintelID };
+                  opening.lintelCount, opening.lintelID,
+                  opening.lowerLedger, opening.upperLedger,
+                  opening.continueJackStudsToLintelUnderside };
             MCObjectHandle record = EnsureOpeningRecord(opening.handle);
             SetRecordText(record, "lintel_id", opening.lintelID.c_str());
             SetRecordText(record, "lintel_count", TXString::ToStringInt(opening.lintelCount));
             SetRecordText(record, "lintel_width_mm", Num(opening.lintelWidthMm).c_str());
             SetRecordText(record, "lintel_height_mm", Num(opening.lintelHeightMm).c_str());
+            SetRecordText(record, "lower_ledger", Bool(opening.lowerLedger).c_str());
+            SetRecordText(record, "upper_ledger", Bool(opening.upperLedger).c_str());
+            SetRecordText(record, "continue_jack_studs_to_lintel_underside",
+                          Bool(opening.continueJackStudsToLintelUnderside).c_str());
             SetRecordText(record, "last_framed_unix",
                           TXString::ToStringInt(static_cast<Sint32>(Now())));
         }
@@ -2496,7 +2645,8 @@ namespace
     protected:
         virtual bool CreateDialogLayout() override
         {
-            if (!this->CreateDialog("iQs Wall Framer Settings", "Generate", "Cancel", false))
+            if (!this->CreateDialog("iQs Wall Framer Settings", "Generate", "Cancel",
+                                    false, true, false))
             {
                 return false;
             }
@@ -2549,12 +2699,12 @@ namespace
 
             if (!fDetectDoors.CreateControl(this, "Frame door openings") ||
                 !fDetectWindows.CreateControl(this, "Frame window openings") ||
-                !fGenerateUpperLedgers.CreateControl(this, "Add ledgers above deep lintels") ||
-                !fGenerateLedgers.CreateControl(this, "Add ledgers beneath deep lintels") ||
+                !fGenerateUpperLedgers.CreateControl(this, "Default: add ledgers above deep lintels") ||
+                !fGenerateLedgers.CreateControl(this, "Default: add ledgers beneath deep lintels") ||
                 !fLedgerTriggerHeightLabel.CreateControl(this, "Ledger required above lintel height:", 34) ||
                 !fLedgerTriggerHeightEdit.CreateControl(this, fSettings.ledgerTriggerHeightMm, 14, VWEditRealCtrl::kEditControlDimension) ||
-                !fContinueJackStudsToLintelUnderside.CreateControl(this, "Continue jack studs to underside of lintel") ||
-                !fOpeningList.CreateControl(this, 86, 10) ||
+                !fContinueJackStudsToLintelUnderside.CreateControl(this, "Default: continue jack studs to underside of lintel") ||
+                !fOpeningList.CreateControl(this, 172, 10) ||
                 !fJambStudCountLabel.CreateControl(this, "Jamb studs per opening side:", 28) ||
                 !fJambStudCountEdit.CreateControl(this, fSettings.jambStudCount, 14) ||
                 !fTrimmerStudCountLabel.CreateControl(this, "Trimmer studs per jamb:", 28) ||
@@ -2674,6 +2824,9 @@ namespace
             fOpeningList.AddColumn("Count", 55);
             fOpeningList.AddColumn("Lintel width", 90);
             fOpeningList.AddColumn("Lintel height", 90);
+            fOpeningList.AddColumn("Lower ledger", 85);
+            fOpeningList.AddColumn("Upper ledger", 85);
+            fOpeningList.AddColumn("Jack overrun", 85);
             for (size_t row = 0; row < fOpeningRows.size(); ++row)
             {
                 fOpeningList.AddRow("");
@@ -2754,6 +2907,25 @@ namespace
                 fOpeningList.GetItem(row, static_cast<size_t>(EOpeningListColumn::LintelHeight));
             heightItem.SetItemText(WholeMm(opening.lintelHeightMm).c_str());
             heightItem.SetItemInteractionType(kListBrowserItemInteractionEditText);
+            VWListBrowserItem lowerLedgerItem =
+                fOpeningList.GetItem(row, static_cast<size_t>(EOpeningListColumn::LowerLedger));
+            lowerLedgerItem.SetItemInteractionType(kListBrowserItemInteractionEditCheckState);
+            lowerLedgerItem.SetItemCheckState(
+                opening.lowerLedger ? CGSMultiStateValueChange::eStateValueOn
+                                    : CGSMultiStateValueChange::eStateValueOff);
+            VWListBrowserItem upperLedgerItem =
+                fOpeningList.GetItem(row, static_cast<size_t>(EOpeningListColumn::UpperLedger));
+            upperLedgerItem.SetItemInteractionType(kListBrowserItemInteractionEditCheckState);
+            upperLedgerItem.SetItemCheckState(
+                opening.upperLedger ? CGSMultiStateValueChange::eStateValueOn
+                                    : CGSMultiStateValueChange::eStateValueOff);
+            VWListBrowserItem jackStudOverrunItem =
+                fOpeningList.GetItem(row, static_cast<size_t>(EOpeningListColumn::JackStudOverrun));
+            jackStudOverrunItem.SetItemInteractionType(kListBrowserItemInteractionEditCheckState);
+            jackStudOverrunItem.SetItemCheckState(
+                opening.continueJackStudsToLintelUnderside
+                    ? CGSMultiStateValueChange::eStateValueOn
+                    : CGSMultiStateValueChange::eStateValueOff);
         }
 
         void OnOpeningListDirectEdit(TControlID, VWListBrowserEventArgs& eventArgs)
@@ -2761,18 +2933,74 @@ namespace
             size_t row = 0;
             size_t column = 0;
             const EListBrowserDirectEditType type = eventArgs.GetType(row, column);
-            if (type != EListBrowserDirectEditType::ItemEditCompletionData ||
-                row >= fOpeningRows.size() ||
-                (column != static_cast<size_t>(EOpeningListColumn::LintelID) &&
-                 column != static_cast<size_t>(EOpeningListColumn::LintelCount) &&
-                 column != static_cast<size_t>(EOpeningListColumn::LintelWidth) &&
-                 column != static_cast<size_t>(EOpeningListColumn::LintelHeight)))
+            if (row >= fOpeningRows.size())
+            {
+                return;
+            }
+
+            WallOpening& opening = fOpeningRows[row];
+            const bool ledgerColumn =
+                column == static_cast<size_t>(EOpeningListColumn::LowerLedger) ||
+                column == static_cast<size_t>(EOpeningListColumn::UpperLedger);
+            const bool checkboxColumn =
+                ledgerColumn ||
+                column == static_cast<size_t>(EOpeningListColumn::JackStudOverrun);
+            if (checkboxColumn &&
+                (type == EListBrowserDirectEditType::QueryItemListRetrieval ||
+                 type == EListBrowserDirectEditType::QueryItemValue))
+            {
+                eventArgs.GetCellCheckbox().fStateValue =
+                    (column == static_cast<size_t>(EOpeningListColumn::LowerLedger)
+                         ? opening.lowerLedger
+                         : column == static_cast<size_t>(EOpeningListColumn::UpperLedger)
+                               ? opening.upperLedger
+                               : opening.continueJackStudsToLintelUnderside)
+                        ? CGSMultiStateValueChange::eStateValueOn
+                        : CGSMultiStateValueChange::eStateValueOff;
+                return;
+            }
+
+            if (type != EListBrowserDirectEditType::ItemEditCompletionData)
+            {
+                return;
+            }
+
+            if (column == static_cast<size_t>(EOpeningListColumn::LowerLedger) ||
+                column == static_cast<size_t>(EOpeningListColumn::UpperLedger) ||
+                column == static_cast<size_t>(EOpeningListColumn::JackStudOverrun))
+            {
+                const bool enabled =
+                    eventArgs.GetCellCheckbox().fStateValue ==
+                    CGSMultiStateValueChange::eStateValueOn;
+                if (column == static_cast<size_t>(EOpeningListColumn::LowerLedger))
+                {
+                    opening.lowerLedger = enabled;
+                }
+                else
+                {
+                    if (column == static_cast<size_t>(EOpeningListColumn::UpperLedger))
+                    {
+                        opening.upperLedger = enabled;
+                    }
+                    else
+                    {
+                        opening.continueJackStudsToLintelUnderside = enabled;
+                    }
+                }
+                SetOpeningRow(row);
+                eventArgs.SetValidEditCompletionData();
+                return;
+            }
+
+            if (column != static_cast<size_t>(EOpeningListColumn::LintelID) &&
+                column != static_cast<size_t>(EOpeningListColumn::LintelCount) &&
+                column != static_cast<size_t>(EOpeningListColumn::LintelWidth) &&
+                column != static_cast<size_t>(EOpeningListColumn::LintelHeight))
             {
                 return;
             }
 
             const TXString& value = eventArgs.GetCellString().fNewStringValue;
-            WallOpening& opening = fOpeningRows[row];
             if (column == static_cast<size_t>(EOpeningListColumn::LintelID))
             {
                 opening.lintelID = value.GetCharPtr();
