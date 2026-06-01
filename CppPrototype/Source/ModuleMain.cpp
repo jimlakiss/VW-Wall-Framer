@@ -478,12 +478,49 @@ namespace
         return "Stud";
     }
 
+    RGBColor MemberClassColor(const std::string& memberType)
+    {
+        if (memberType == "BOTTOM_PLATE") { return { 46260, 38550, 28270 }; }
+        if (memberType == "TOP_PLATE") { return { 53970, 46260, 33410 }; }
+        if (memberType == "END_STUD") { return { 34695, 48830, 59110 }; }
+        if (memberType == "CORNER_STUD") { return { 26728, 41120, 52685 }; }
+        if (memberType == "JAMB_STUD") { return { 45232, 35980, 55512 }; }
+        if (memberType == "TRIMMER_STUD") { return { 55512, 41120, 58082 }; }
+        if (memberType == "JACK_STUD") { return { 59110, 48830, 33410 }; }
+        if (memberType == "LINTEL" || memberType == "HEADER") { return { 51400, 20560, 20560 }; }
+        if (memberType == "SILL") { return { 25700, 51400, 38550 }; }
+        if (memberType == "LEDGER") { return { 20560, 46260, 51400 }; }
+        if (memberType == "NOGGING") { return { 41120, 51400, 30840 }; }
+        return { 51400, 43690, 33410 };
+    }
+
+    bool ClassExists(const TXString& className)
+    {
+        const InternalIndex maxClassID = gSDK->MaxClassID();
+        for (InternalIndex classID = 1; classID <= maxClassID; ++classID)
+        {
+            TXString existingName;
+            gSDK->ClassIDToName(classID, existingName);
+            if (existingName.EqualNoCase(className)) { return true; }
+        }
+        return false;
+    }
+
     InternalIndex GeneratedMemberClassID(const std::string& memberType)
     {
-        const std::string className =
-            std::string(gSettings.generatedClassName.GetCharPtr()) + "-" +
-            MemberClassDescription(memberType);
-        const InternalIndex classID = gSDK->AddClass(className.c_str());
+        const TXString className =
+            gSettings.generatedClassName + "-" + MemberClassDescription(memberType).c_str();
+        const bool existed = ClassExists(className);
+        const InternalIndex classID = gSDK->AddClass(className);
+        if (!existed || !gSDK->GetClUseGraphic(classID))
+        {
+            const RGBColor rgb = MemberClassColor(memberType);
+            ColorRef color = 0;
+            gSDK->RGBToColorIndex(rgb, color);
+            gSDK->SetClColor(classID, { color, color, color, color });
+            gSDK->SetClFillPat(classID, 1);
+            gSDK->SetClUseGraphic(classID, true);
+        }
         gSDK->SetClassVisibility(classID, true);
         return classID;
     }
@@ -970,6 +1007,8 @@ namespace
         MCObjectHandle handle = member;
         group.AddObject(handle);
         gSDK->SetObjectClass(handle, GeneratedMemberClassID(memberType));
+        gSDK->SetFColorsByClass(handle);
+        gSDK->SetFPatByClass(handle);
         gSDK->ResetObject(handle);
         return handle;
     }
@@ -1007,6 +1046,8 @@ namespace
         MCObjectHandle handle = member;
         group.AddObject(handle);
         gSDK->SetObjectClass(handle, GeneratedMemberClassID(memberType));
+        gSDK->SetFColorsByClass(handle);
+        gSDK->SetFPatByClass(handle);
         gSDK->ResetObject(handle);
         return handle;
     }

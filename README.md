@@ -27,6 +27,8 @@ group per selected straight wall. Each group contains:
   lintel ID is nominated
 - document-native `iQs_Opening` records on inserted doors and windows, preserving
   lintel IDs, counts and dimensions across regeneration and Vectorworks restarts
+- descriptive member classes with a default colour palette inherited by the
+  generated framing solids
 - tagged extrude sill members under inserted windows
 - jack studs above lintels and below raised sills/openings, with lintel-height-aware
   upper termination and an override to continue them to the lintel underside
@@ -75,7 +77,6 @@ host wall, reports stale duplicates, and creates one canonical replacement.
   recomputes when settings change
 - support explicit lintel offsets for the less common cases where a lintel sits
   outside the wall framing envelope
-- assign colours by generated framing class
 - allow materials to be allocated to framing members
 
 V0.1 accepts straight walls with linear start-to-end top and bottom heights.

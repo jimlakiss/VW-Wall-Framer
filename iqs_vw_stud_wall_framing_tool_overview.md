@@ -545,7 +545,8 @@ Implementation options:
   `Wall-Timber Frame-Bottom plate` and `Wall-Timber Frame-Top plate`, rather than
   abbreviations, so installation costs can differ by member type; implemented
   in the current prototype;
-- assign colours by generated framing class;
+- assign colours by generated framing class; implemented in the current
+  prototype with a default class palette inherited by the generated solids;
 - allow materials to be allocated to framing members;
 - optionally add window/door ledgers above and beneath lintels over a
   configurable height, defaulting to `120 mm`. The
