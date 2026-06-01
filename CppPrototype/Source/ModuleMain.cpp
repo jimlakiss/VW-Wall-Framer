@@ -1541,6 +1541,49 @@ namespace
                                });
         };
 
+        auto tallestStudInPack = [&](const VerticalEdge& pack) {
+            VerticalEdge tallest;
+            double tallestHeight = 0.0;
+            for (const VerticalEdge& edge : verticalEdges)
+            {
+                const bool belongsToPack =
+                    edge.left < pack.right + 0.001 &&
+                    edge.right > pack.left - 0.001;
+                const double height = edge.top - edge.bottom;
+                if (belongsToPack && height > tallestHeight)
+                {
+                    tallest = edge;
+                    tallestHeight = height;
+                }
+            }
+            return tallest;
+        };
+
+        auto supportingFace = [&](const VerticalEdge& pack, double bottom, double top,
+                                  bool rightFace, double& face) {
+            bool found = false;
+            for (const VerticalEdge& edge : verticalEdges)
+            {
+                const bool belongsToPack =
+                    edge.left < pack.right + 0.001 &&
+                    edge.right > pack.left - 0.001;
+                if (!belongsToPack ||
+                    edge.bottom > bottom + 0.001 ||
+                    edge.top < top - 0.001)
+                {
+                    continue;
+                }
+
+                const double candidate = rightFace ? edge.right : edge.left;
+                if (!found || (rightFace ? candidate > face : candidate < face))
+                {
+                    face = candidate;
+                    found = true;
+                }
+            }
+            return found;
+        };
+
         const double highestStudHeight =
             std::max(wallProfile.topStartMm - wallProfile.bottomStartMm,
                      wallProfile.topEndMm - wallProfile.bottomEndMm) -
@@ -1555,35 +1598,55 @@ namespace
             size_t noggingIndex = 0;
             for (size_t i = 1; i < mergedEdges.size(); ++i)
             {
-                const double gapStart = mergedEdges[i - 1].right;
-                const double gapEnd = mergedEdges[i].left;
-                const double gapLength = gapEnd - gapStart;
+                const VerticalEdge& leftPack = mergedEdges[i - 1];
+                const VerticalEdge& rightPack = mergedEdges[i];
+                const double packGapLength = rightPack.left - leftPack.right;
                 const bool cornerClusterGap =
-                    mergedEdges[i - 1].containsCornerStud || mergedEdges[i].containsCornerStud;
-                if (gapLength <= 0.001 ||
-                    (!cornerClusterGap && gapLength <= kStudWidthMm + 0.001))
+                    leftPack.containsCornerStud || rightPack.containsCornerStud;
+                if (packGapLength <= 0.001 ||
+                    (!cornerClusterGap && packGapLength <= kStudWidthMm + 0.001))
                 {
                     continue;
                 }
 
-                const double gapStation = (gapStart + gapEnd) / 2.0;
-                const double studBottom =
-                    Interpolate(wallProfile.bottomStartMm, wallProfile.bottomEndMm,
-                                gapStation, wallLength) +
-                    static_cast<double>(kBottomPlateCount) * kPlateHeightMm;
-                const double studTop =
-                    Interpolate(wallProfile.topStartMm, wallProfile.topEndMm,
-                                gapStation, wallLength) -
-                    static_cast<double>(kTopPlateCount) * kPlateHeightMm;
+                const VerticalEdge leftTallest = tallestStudInPack(leftPack);
+                const VerticalEdge rightTallest = tallestStudInPack(rightPack);
+                const VerticalEdge& governingStud =
+                    leftTallest.top - leftTallest.bottom >= rightTallest.top - rightTallest.bottom
+                        ? leftTallest
+                        : rightTallest;
+                const double governingHeight = governingStud.top - governingStud.bottom;
+                const size_t pairNoggingRowCount =
+                    governingHeight > 0.0
+                        ? static_cast<size_t>(
+                              std::max(0.0, std::ceil(governingHeight / kNoggingCentresMm) - 1.0))
+                        : 0;
+                if (row > pairNoggingRowCount) { continue; }
+
                 const double noggingCentreZ =
-                    studBottom + (studTop - studBottom) * static_cast<double>(row) /
-                                      static_cast<double>(noggingRowCount + 1);
+                    governingStud.bottom +
+                    governingHeight * static_cast<double>(row) /
+                        static_cast<double>(pairNoggingRowCount + 1);
                 const double noggingZ =
                     noggingIndex % 2 == 0 ? noggingCentreZ - gSettings.noggingStaggerMm
                                          : noggingCentreZ;
                 const double noggingTop = noggingZ + kNoggingHeightMm;
-                if (!supportsNogging(mergedEdges[i - 1], noggingZ, noggingTop) ||
-                    !supportsNogging(mergedEdges[i], noggingZ, noggingTop))
+                if (!supportsNogging(leftPack, noggingZ, noggingTop) ||
+                    !supportsNogging(rightPack, noggingZ, noggingTop))
+                {
+                    continue;
+                }
+
+                double gapStart = 0.0;
+                double gapEnd = 0.0;
+                if (!supportingFace(leftPack, noggingZ, noggingTop, true, gapStart) ||
+                    !supportingFace(rightPack, noggingZ, noggingTop, false, gapEnd))
+                {
+                    continue;
+                }
+                const double gapLength = gapEnd - gapStart;
+                if (gapLength <= 0.001 ||
+                    (!cornerClusterGap && gapLength <= kStudWidthMm + 0.001))
                 {
                     continue;
                 }
