@@ -547,14 +547,17 @@ Implementation options:
   in the current prototype;
 - assign colours by generated framing class;
 - allow materials to be allocated to framing members;
-- optionally add a window/door ledger beneath lintels over `120 mm` high. The
+- optionally add a window/door ledger beneath lintels over a configurable
+  height, defaulting to `120 mm`. The
   ledger is generally stud-sized, installed length-long by height-short, with
   its underside governed by the window or door head height. Lintel support
   detailing for above-opening jack studs should use total lintel depth: run the
   jack from the underside of the top plate down to the lintel underside when
   the lintel is less than half the stud width, but terminate it at the lintel
   top when the total depth is at least half the stud width, including built-up
-  lintels such as `2 x 32 mm = 64 mm`;
+  lintels such as `2 x 32 mm = 64 mm`; implemented in the current prototype for
+  the nominated single lintel profile. A settings override can continue upper
+  jack studs to the lintel underside;
 - store member metadata in a JSON blob/record field on the parent PIO;
 - optionally create lightweight 2D elevation lines/rectangles for documentation.
 

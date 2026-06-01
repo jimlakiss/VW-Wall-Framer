@@ -19,8 +19,11 @@ group per selected straight wall. Each group contains:
 - regular `45 mm` studs at `450 mm` centres, including end studs
 - opening-aware jamb and trimmer studs for inserted doors and windows
 - tagged extrude headers over inserted doors and windows
+- optional stud-profile ledgers beneath lintels over a configurable height,
+  defaulting to `120 mm`
 - tagged extrude sill members under inserted windows
-- jack studs above headers and below raised sills/openings
+- jack studs above headers and below raised sills/openings, with lintel-height-aware
+  upper termination and an override to continue them to the lintel underside
 - opening-aware nogging rows fitted between vertical members from the clear stud
   zone at 1350 mm centres, staggered by 45 mm
 - short noggings retained inside intentional corner-stud clusters to represent
@@ -32,7 +35,7 @@ group per selected straight wall. Each group contains:
 - overlap resolution for vertical framing: end studs, opening studs, trimmers,
   jamb studs, corner studs, then regular studs
 - configurable incrementing member names: `BP`, `TP`, `S`, `ES`, `CS`, `JAM`,
-  `TR`, `JS`, `NOG`, `WS`, `LIN` and `DH`
+  `TR`, `JS`, `NOG`, `WS`, `LIN`, `DH` and `LED`
 
 Generated frame groups are assigned to the `Wall-Timber Frame-Frame group`
 class. Child members are assigned to descriptive sibling classes, such as
@@ -69,14 +72,6 @@ host wall, reports stale duplicates, and creates one canonical replacement.
 - support multiple lintels over an opening
 - support explicit lintel offsets for the less common cases where a lintel sits
   outside the wall framing envelope
-- optionally add a window/door ledger beneath lintels over `120 mm` high. The
-  ledger is generally stud-sized, installed length-long by height-short, with
-  its underside governed by the window or door head height. Lintel support
-  detailing for above-opening jack studs should consider the total lintel
-  depth: where it is less than half the stud width, run the jack from the
-  underside of the top plate down to the lintel underside; where it is at least
-  half the stud width, including built-up lintels such as `2 x 32 mm = 64 mm`,
-  terminate the jack at the lintel top.
 - assign colours by generated framing class
 - allow materials to be allocated to framing members
 

@@ -55,12 +55,15 @@ namespace
         double noggingWidthMm = 90.0;
         double sillHeightMm = kPlateHeightMm;
         double sillWidthMm = 90.0;
+        double ledgerTriggerHeightMm = 120.0;
         double noggingCentresMm = kNoggingCentresMm;
         double noggingStaggerMm = kNoggingHeightMm;
         Sint32 bottomPlateCount = static_cast<Sint32>(kBottomPlateCount);
         Sint32 topPlateCount = static_cast<Sint32>(kTopPlateCount);
         bool detectDoors = true;
         bool detectWindows = true;
+        bool generateLedgers = true;
+        bool continueJackStudsToLintelUnderside = false;
         Sint32 jambStudCount = 1;
         Sint32 trimmerStudCount = 1;
         bool generateNoggings = true;
@@ -78,6 +81,7 @@ namespace
         TXString windowSillPrefix = "WS";
         TXString lintelPrefix = "LIN";
         TXString doorHeadPrefix = "DH";
+        TXString ledgerPrefix = "LED";
     };
 
     FramingSettings gSettings;
@@ -403,6 +407,7 @@ namespace
         if (memberType == "JACK_STUD") { return "Jack stud"; }
         if (memberType == "HEADER") { return "Header"; }
         if (memberType == "SILL") { return "Window sill"; }
+        if (memberType == "LEDGER") { return "Window and door ledger"; }
         if (memberType == "NOGGING") { return "Nogging"; }
         return "Stud";
     }
@@ -424,6 +429,7 @@ namespace
         if (memberType == "JAMB_STUD") { return gSettings.jambStudPrefix; }
         if (memberType == "TRIMMER_STUD") { return gSettings.trimmerStudPrefix; }
         if (memberType == "JACK_STUD") { return gSettings.jackStudPrefix; }
+        if (memberType == "LEDGER") { return gSettings.ledgerPrefix; }
         return gSettings.studPrefix;
     }
 
@@ -1238,13 +1244,169 @@ namespace
             int priority = 0;
         };
 
+        struct VerticalSegment
+        {
+            double bottomMm = 0.0;
+            double topMm = 0.0;
+        };
+
+        auto ledgerHeightForOpening = [&](const WallOpening&) {
+            return gSettings.generateLedgers &&
+                           kHeaderHeightMm > gSettings.ledgerTriggerHeightMm
+                       ? kStudWidthMm
+                       : 0.0;
+        };
+        auto lintelBottomForOpening = [&](const WallOpening& opening) {
+            return opening.topMm + ledgerHeightForOpening(opening);
+        };
+        auto lintelTopForOpening = [&](const WallOpening& opening) {
+            return lintelBottomForOpening(opening) + kHeaderHeightMm;
+        };
+        auto upperJackBottomForOpening = [&](const WallOpening& opening) {
+            return gSettings.continueJackStudsToLintelUnderside ||
+                           kHeaderHeightMm < kStudWidthMm / 2.0
+                       ? lintelBottomForOpening(opening)
+                       : lintelTopForOpening(opening);
+        };
+
+        auto splitVerticalRangeForOpenings =
+            [&](double station, double memberWidth, double bottom, double top,
+                size_t ignoredOpeningIndex) {
+                std::vector<VerticalSegment> segments;
+                if (top <= bottom) { return segments; }
+                segments.push_back({ bottom, top });
+
+                const double memberLeft = station - memberWidth / 2.0;
+                const double memberRight = station + memberWidth / 2.0;
+                if (ignoredOpeningIndex < openings.size())
+                {
+                    const WallOpening& ownOpening = openings[ignoredOpeningIndex];
+                    const double ownOpeningCentre =
+                        (ownOpening.bottomMm + ownOpening.topMm) / 2.0;
+                    for (size_t openingIndex = 0; openingIndex < openings.size(); ++openingIndex)
+                    {
+                        if (openingIndex == ignoredOpeningIndex) { continue; }
+
+                        const WallOpening& opening = openings[openingIndex];
+                        const double openingLeft = opening.stationMm - opening.widthMm / 2.0;
+                        const double openingRight = opening.stationMm + opening.widthMm / 2.0;
+                        if (memberLeft >= openingRight - 0.001 ||
+                            memberRight <= openingLeft + 0.001)
+                        {
+                            continue;
+                        }
+
+                        const double openingCentre = (opening.bottomMm + opening.topMm) / 2.0;
+                        if (openingCentre > ownOpeningCentre)
+                        {
+                            const double sillUnderside =
+                                opening.bottomMm -
+                                (opening.type == "WINDOW" ? gSettings.sillHeightMm : 0.0);
+                            segments[0].topMm = std::min(segments[0].topMm, sillUnderside);
+                        }
+                        else
+                        {
+                            segments[0].bottomMm =
+                                std::max(segments[0].bottomMm,
+                                         lintelTopForOpening(opening));
+                        }
+                    }
+
+                    if (segments[0].topMm <= segments[0].bottomMm + 0.001)
+                    {
+                        segments.clear();
+                    }
+                    return segments;
+                }
+
+                for (size_t openingIndex = 0; openingIndex < openings.size(); ++openingIndex)
+                {
+                    const WallOpening& opening = openings[openingIndex];
+                    const double openingLeft = opening.stationMm - opening.widthMm / 2.0;
+                    const double openingRight = opening.stationMm + opening.widthMm / 2.0;
+                    if (memberLeft >= openingRight - 0.001 ||
+                        memberRight <= openingLeft + 0.001)
+                    {
+                        continue;
+                    }
+
+                    std::vector<VerticalSegment> remaining;
+                    const double framedOpeningBottom =
+                        opening.bottomMm -
+                        (opening.type == "WINDOW" ? gSettings.sillHeightMm : 0.0);
+                    const double framedOpeningTop = lintelTopForOpening(opening);
+                    for (const VerticalSegment& segment : segments)
+                    {
+                        if (segment.topMm <= framedOpeningBottom + 0.001 ||
+                            segment.bottomMm >= framedOpeningTop - 0.001)
+                        {
+                            remaining.push_back(segment);
+                            continue;
+                        }
+                        if (segment.bottomMm < framedOpeningBottom - 0.001)
+                        {
+                            remaining.push_back({ segment.bottomMm, framedOpeningBottom });
+                        }
+                        if (segment.topMm > framedOpeningTop + 0.001)
+                        {
+                            remaining.push_back({ framedOpeningTop, segment.topMm });
+                        }
+                    }
+                    segments = remaining;
+                }
+                return segments;
+            };
+
         std::vector<PendingVerticalMember> pendingVerticalMembers;
         auto queueVerticalMember = [&](const std::string& id, const std::string& type,
                                        double station, double zStart, double zHeight,
-                                       double memberLength, int priority) {
+                                       double memberLength, int priority,
+                                       size_t ignoredOpeningIndex =
+                                           std::numeric_limits<size_t>::max()) {
             if (zHeight <= 0.0) { return; }
-            pendingVerticalMembers.push_back(
-                { id, type, station, zStart, zHeight, memberLength, priority });
+            const double memberLengthScale = memberLength / zHeight;
+            for (const VerticalSegment& segment :
+                 splitVerticalRangeForOpenings(station, kStudWidthMm, zStart,
+                                               zStart + zHeight, ignoredOpeningIndex))
+            {
+                const double segmentHeight = segment.topMm - segment.bottomMm;
+                pendingVerticalMembers.push_back(
+                    { id, type, station, segment.bottomMm, segmentHeight,
+                      segmentHeight * memberLengthScale, priority });
+            }
+        };
+
+        struct DirectJackSegment
+        {
+            double stationMm = 0.0;
+            double bottomMm = 0.0;
+            double topMm = 0.0;
+        };
+        std::vector<DirectJackSegment> directJackSegments;
+        auto addSegmentedJack = [&](double station, double zStart, double zHeight,
+                                    size_t ignoredOpeningIndex) {
+            for (const VerticalSegment& segment :
+                 splitVerticalRangeForOpenings(station, kStudWidthMm, zStart,
+                                               zStart + zHeight, ignoredOpeningIndex))
+            {
+                const double segmentHeight = segment.topMm - segment.bottomMm;
+                const bool overlapsExisting =
+                    std::any_of(directJackSegments.begin(), directJackSegments.end(),
+                                [&](const DirectJackSegment& existing) {
+                                    return std::abs(existing.stationMm - station) <
+                                               kStudWidthMm - 0.001 &&
+                                           segment.bottomMm < existing.topMm - 0.001 &&
+                                           segment.topMm > existing.bottomMm + 0.001;
+                                });
+                if (gSettings.resolveStudOverlaps && overlapsExisting) { continue; }
+
+                addMember(nextMemberName(MemberPrefix("JACK_STUD")), "JACK_STUD",
+                          station - kStudWidthMm / 2.0, kStudWidthMm,
+                          segment.bottomMm, segmentHeight, gSettings.studDepthMm,
+                          station, segmentHeight, kStudWidthMm, gSettings.studDepthMm,
+                          "Length", "Width", "Height");
+                directJackSegments.push_back({ station, segment.bottomMm, segment.topMm });
+            }
         };
 
         std::vector<double> stations;
@@ -1337,7 +1499,7 @@ namespace
                     GrossVerticalBottom(studBottom, kStudWidthMm, bottomSlope),
                     GrossVerticalLength(height, kStudWidthMm, bottomSlope, studTopSlope),
                     GrossVerticalLength(height, kStudWidthMm, bottomSlope, studTopSlope),
-                    type == "TRIMMER_STUD" ? 80 : 70);
+                    type == "TRIMMER_STUD" ? 80 : 70, i);
             };
 
             for (Sint32 i = 0; i < gSettings.trimmerStudCount; ++i)
@@ -1369,11 +1531,22 @@ namespace
                 static_cast<double>(gSettings.trimmerStudCount) * kStudWidthMm;
             const double headerStart = openingLeft - trimmerPackWidth;
             const double headerLength = opening.widthMm + 2.0 * trimmerPackWidth;
+            const double ledgerHeight = ledgerHeightForOpening(opening);
+            if (ledgerHeight > 0.0)
+            {
+                addMember(nextMemberName(MemberPrefix("LEDGER")), "LEDGER",
+                          headerStart, headerLength,
+                          opening.topMm, ledgerHeight, gSettings.studDepthMm,
+                          opening.stationMm,
+                          headerLength, gSettings.studDepthMm, ledgerHeight,
+                          "Height", "Length", "Width");
+            }
             addMember(nextMemberName(opening.type == "WINDOW"
                                          ? gSettings.lintelPrefix
                                          : gSettings.doorHeadPrefix),
                       "HEADER", headerStart, headerLength,
-                      opening.topMm, kHeaderHeightMm, gSettings.headerWidthMm, opening.stationMm,
+                      lintelBottomForOpening(opening), kHeaderHeightMm,
+                      gSettings.headerWidthMm, opening.stationMm,
                       headerLength, gSettings.headerWidthMm, kHeaderHeightMm,
                       "Height", "Length", "Width");
 
@@ -1387,7 +1560,7 @@ namespace
                           "Width", "Length", "Height");
             }
 
-            const double upperJackBottom = opening.topMm + kHeaderHeightMm;
+            const double upperJackBottom = upperJackBottomForOpening(opening);
             const double lowerJackTop = opening.bottomMm - gSettings.sillHeightMm;
             std::vector<double> lowerJackStations;
             auto addLowerJack = [&](double station) {
@@ -1406,15 +1579,10 @@ namespace
                 if (lowerJackTop <= localLowerJackBottom) { return; }
 
                 const double height = lowerJackTop - localLowerJackBottom;
-                addMember(nextMemberName(MemberPrefix("JACK_STUD")), "JACK_STUD",
-                          station - kStudWidthMm / 2.0, kStudWidthMm,
-                          GrossVerticalBottom(localLowerJackBottom, kStudWidthMm, bottomSlope),
-                          GrossVerticalLength(height, kStudWidthMm, bottomSlope, 0.0),
-                          gSettings.studDepthMm,
-                          station,
-                          GrossVerticalLength(height, kStudWidthMm, bottomSlope, 0.0),
-                          kStudWidthMm, gSettings.studDepthMm,
-                          "Length", "Width", "Height");
+                addSegmentedJack(
+                    station,
+                    GrossVerticalBottom(localLowerJackBottom, kStudWidthMm, bottomSlope),
+                    GrossVerticalLength(height, kStudWidthMm, bottomSlope, 0.0), i);
                 lowerJackStations.push_back(station);
             };
 
@@ -1443,15 +1611,9 @@ namespace
                 if (upperJackTop > upperJackBottom)
                 {
                     const double height = upperJackTop - upperJackBottom;
-                    addMember(nextMemberName(MemberPrefix("JACK_STUD")), "JACK_STUD",
-                              adjustedStation - kStudWidthMm / 2.0, kStudWidthMm,
-                              upperJackBottom,
-                              GrossVerticalLength(height, kStudWidthMm, 0.0, topSlope),
-                              gSettings.studDepthMm,
-                              adjustedStation,
-                              GrossVerticalLength(height, kStudWidthMm, 0.0, topSlope),
-                              kStudWidthMm, gSettings.studDepthMm,
-                              "Length", "Width", "Height");
+                    addSegmentedJack(
+                        adjustedStation, upperJackBottom,
+                        GrossVerticalLength(height, kStudWidthMm, 0.0, topSlope), i);
                 }
                 addLowerJack(adjustedStation);
             }
@@ -1474,8 +1636,14 @@ namespace
                                     accepted.stationMm - kStudWidthMm / 2.0;
                                 const double acceptedRight =
                                     accepted.stationMm + kStudWidthMm / 2.0;
+                                const bool verticalOverlap =
+                                    candidate.zStartMm <
+                                        accepted.zStartMm + accepted.zHeightMm - 0.001 &&
+                                    candidate.zStartMm + candidate.zHeightMm >
+                                        accepted.zStartMm + 0.001;
                                 return candidateLeft < acceptedRight - 0.001 &&
-                                       candidateRight > acceptedLeft + 0.001;
+                                       candidateRight > acceptedLeft + 0.001 &&
+                                       verticalOverlap;
                             });
             if (gSettings.resolveStudOverlaps && overlapsAccepted) { continue; }
 
@@ -1987,6 +2155,7 @@ namespace
         settings.noggingWidthMm = std::max(1.0, settings.noggingWidthMm);
         settings.sillHeightMm = std::max(1.0, settings.sillHeightMm);
         settings.sillWidthMm = std::max(1.0, settings.sillWidthMm);
+        settings.ledgerTriggerHeightMm = std::max(0.0, settings.ledgerTriggerHeightMm);
         settings.noggingCentresMm = std::max(settings.noggingHeightMm, settings.noggingCentresMm);
         settings.noggingStaggerMm = std::max(0.0, settings.noggingStaggerMm);
         settings.bottomPlateCount = std::max<Sint32>(0, settings.bottomPlateCount);
@@ -2005,6 +2174,7 @@ namespace
         if (settings.windowSillPrefix.IsEmpty()) { settings.windowSillPrefix = "WS"; }
         if (settings.lintelPrefix.IsEmpty()) { settings.lintelPrefix = "LIN"; }
         if (settings.doorHeadPrefix.IsEmpty()) { settings.doorHeadPrefix = "DH"; }
+        if (settings.ledgerPrefix.IsEmpty()) { settings.ledgerPrefix = "LED"; }
     }
 
     class CFramingSettingsDialog : public VWDialog
@@ -2021,6 +2191,8 @@ namespace
               fHeaderHeightLabel(130), fHeaderHeightEdit(131),
               fHeaderWidthLabel(132), fHeaderWidthEdit(133),
               fDetectDoors(140), fDetectWindows(141),
+              fGenerateLedgers(195), fLedgerTriggerHeightLabel(198),
+              fLedgerTriggerHeightEdit(199), fContinueJackStudsToLintelUnderside(200),
               fJambStudCountLabel(142), fJambStudCountEdit(143),
               fTrimmerStudCountLabel(144), fTrimmerStudCountEdit(145),
               fGenerateNoggings(150), fNoggingHeightLabel(151), fNoggingHeightEdit(152),
@@ -2039,6 +2211,7 @@ namespace
               fWindowSillPrefixLabel(170), fWindowSillPrefixEdit(171),
               fLintelPrefixLabel(172), fLintelPrefixEdit(173),
               fDoorHeadPrefixLabel(174), fDoorHeadPrefixEdit(175),
+              fLedgerPrefixLabel(196), fLedgerPrefixEdit(197),
               fProfileMemberHeader(176), fProfileWidthHeader(177), fProfileHeightHeader(178),
               fStudDepthEdit(179), fPlateWidthEdit(180), fNoggingWidthEdit(181),
               fSillLabel(182), fSillWidthEdit(183), fSillHeightEdit(184)
@@ -2113,6 +2286,10 @@ namespace
 
             if (!fDetectDoors.CreateControl(this, "Frame door openings") ||
                 !fDetectWindows.CreateControl(this, "Frame window openings") ||
+                !fGenerateLedgers.CreateControl(this, "Add ledgers beneath deep lintels") ||
+                !fLedgerTriggerHeightLabel.CreateControl(this, "Ledger required above lintel height:", 34) ||
+                !fLedgerTriggerHeightEdit.CreateControl(this, fSettings.ledgerTriggerHeightMm, 14, VWEditRealCtrl::kEditControlDimension) ||
+                !fContinueJackStudsToLintelUnderside.CreateControl(this, "Continue jack studs to underside of lintel") ||
                 !fJambStudCountLabel.CreateControl(this, "Jamb studs per opening side:", 28) ||
                 !fJambStudCountEdit.CreateControl(this, fSettings.jambStudCount, 14) ||
                 !fTrimmerStudCountLabel.CreateControl(this, "Trimmer studs per jamb:", 28) ||
@@ -2151,7 +2328,9 @@ namespace
                 !fLintelPrefixLabel.CreateControl(this, "Lintel prefix:", 22) ||
                 !fLintelPrefixEdit.CreateControl(this, fSettings.lintelPrefix, 12) ||
                 !fDoorHeadPrefixLabel.CreateControl(this, "Door head prefix:", 22) ||
-                !fDoorHeadPrefixEdit.CreateControl(this, fSettings.doorHeadPrefix, 12))
+                !fDoorHeadPrefixEdit.CreateControl(this, fSettings.doorHeadPrefix, 12) ||
+                !fLedgerPrefixLabel.CreateControl(this, "Ledger prefix:", 22) ||
+                !fLedgerPrefixEdit.CreateControl(this, fSettings.ledgerPrefix, 12))
             {
                 return false;
             }
@@ -2183,7 +2362,11 @@ namespace
 
             fOpeningsPane.AddFirstGroupControl(&fDetectDoors);
             this->AddBelowControl(&fDetectDoors, &fDetectWindows);
-            this->AddBelowControl(&fDetectWindows, &fJambStudCountLabel);
+            this->AddBelowControl(&fDetectWindows, &fGenerateLedgers);
+            this->AddBelowControl(&fGenerateLedgers, &fLedgerTriggerHeightLabel);
+            this->AddRightControl(&fLedgerTriggerHeightLabel, &fLedgerTriggerHeightEdit);
+            this->AddBelowControl(&fLedgerTriggerHeightLabel, &fContinueJackStudsToLintelUnderside);
+            this->AddBelowControl(&fContinueJackStudsToLintelUnderside, &fJambStudCountLabel);
             this->AddRightControl(&fJambStudCountLabel, &fJambStudCountEdit);
             AddLabelledControl(fTrimmerStudCountLabel, fTrimmerStudCountEdit, &fJambStudCountLabel);
 
@@ -2207,6 +2390,7 @@ namespace
             AddLabelledControl(fWindowSillPrefixLabel, fWindowSillPrefixEdit, &fNoggingPrefixLabel);
             AddLabelledControl(fLintelPrefixLabel, fLintelPrefixEdit, &fWindowSillPrefixLabel);
             AddLabelledControl(fDoorHeadPrefixLabel, fDoorHeadPrefixEdit, &fLintelPrefixLabel);
+            AddLabelledControl(fLedgerPrefixLabel, fLedgerPrefixEdit, &fDoorHeadPrefixLabel);
             return true;
         }
 
@@ -2225,6 +2409,9 @@ namespace
             this->AddDDX_EditReal(133, &fSettings.headerWidthMm, VWEditRealCtrl::kEditControlDimension);
             this->AddDDX_CheckButton(140, &fSettings.detectDoors);
             this->AddDDX_CheckButton(141, &fSettings.detectWindows);
+            this->AddDDX_CheckButton(195, &fSettings.generateLedgers);
+            this->AddDDX_EditReal(199, &fSettings.ledgerTriggerHeightMm, VWEditRealCtrl::kEditControlDimension);
+            this->AddDDX_CheckButton(200, &fSettings.continueJackStudsToLintelUnderside);
             this->AddDDX_EditInteger(143, &fSettings.jambStudCount);
             this->AddDDX_EditInteger(145, &fSettings.trimmerStudCount);
             this->AddDDX_CheckButton(150, &fSettings.generateNoggings);
@@ -2248,6 +2435,7 @@ namespace
             this->AddDDX_EditText(171, &fSettings.windowSillPrefix);
             this->AddDDX_EditText(173, &fSettings.lintelPrefix);
             this->AddDDX_EditText(175, &fSettings.doorHeadPrefix);
+            this->AddDDX_EditText(197, &fSettings.ledgerPrefix);
         }
 
     private:
@@ -2294,6 +2482,10 @@ namespace
         VWEditRealCtrl fHeaderWidthEdit;
         VWCheckButtonCtrl fDetectDoors;
         VWCheckButtonCtrl fDetectWindows;
+        VWCheckButtonCtrl fGenerateLedgers;
+        VWStaticTextCtrl fLedgerTriggerHeightLabel;
+        VWEditRealCtrl fLedgerTriggerHeightEdit;
+        VWCheckButtonCtrl fContinueJackStudsToLintelUnderside;
         VWStaticTextCtrl fJambStudCountLabel;
         VWEditIntegerCtrl fJambStudCountEdit;
         VWStaticTextCtrl fTrimmerStudCountLabel;
@@ -2331,6 +2523,8 @@ namespace
         VWEditTextCtrl fLintelPrefixEdit;
         VWStaticTextCtrl fDoorHeadPrefixLabel;
         VWEditTextCtrl fDoorHeadPrefixEdit;
+        VWStaticTextCtrl fLedgerPrefixLabel;
+        VWEditTextCtrl fLedgerPrefixEdit;
         VWStaticTextCtrl fProfileMemberHeader;
         VWStaticTextCtrl fProfileWidthHeader;
         VWStaticTextCtrl fProfileHeightHeader;
