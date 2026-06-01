@@ -18,11 +18,17 @@ group per selected straight wall. Each group contains:
 - bottom-plate layers split around door thresholds and low window sills that intersect them
 - regular `45 mm` studs at `450 mm` centres, including end studs
 - opening-aware jamb and trimmer studs for inserted doors and windows
-- tagged extrude headers over inserted doors and windows
-- optional stud-profile ledgers beneath lintels over a configurable height,
-  defaulting to `120 mm`
+- tagged extrude lintels over inserted doors and windows
+- optional stud-profile ledgers above and beneath lintels over a configurable
+  height, defaulting to `120 mm`
+- scrollable per-opening lintel ID, count and profile overrides, keyed
+  internally and labelled with the visible Vectorworks window or door ID
+- verbatim user-nominated lintel IDs, with run-wide automatic numbering when no
+  lintel ID is nominated
+- document-native `iQs_Opening` records on inserted doors and windows, preserving
+  lintel IDs, counts and dimensions across regeneration and Vectorworks restarts
 - tagged extrude sill members under inserted windows
-- jack studs above headers and below raised sills/openings, with lintel-height-aware
+- jack studs above lintels and below raised sills/openings, with lintel-height-aware
   upper termination and an override to continue them to the lintel underside
 - opening-aware nogging rows fitted between vertical members from the clear stud
   zone at 1350 mm centres, staggered by 45 mm
@@ -40,13 +46,13 @@ group per selected straight wall. Each group contains:
 Generated frame groups are assigned to the `Wall-Timber Frame-Frame group`
 class. Child members are assigned to descriptive sibling classes, such as
 `Wall-Timber Frame-Bottom plate` and `Wall-Timber Frame-Top plate`, so each member
-type can carry a distinct installation cost. A later settings modal will allow
-the user to choose a different framing class and wall component.
+type can carry a distinct installation cost. The settings modal allows the user
+to choose a different framing class and wall component.
 
 The prototype requires a wall component named exactly `Timber Frame`. Its depth
 and centreline define the generated framing position. If that component is not
 present, the wall is reported and skipped without replacing any prior generated
-frame. The settings modal will later allow the component name to be selected.
+frame. The settings modal allows the component name to be selected.
 The command writes a matching `stud_wall_frame_generation_*.json` member
 schedule to `probe-output/`.
 
@@ -67,9 +73,6 @@ host wall, reports stale duplicates, and creates one canonical replacement.
 
 - replace the menu-only workflow with an editable wall-frame object that
   recomputes when settings change
-- expose opening IDs from nominated Vectorworks door and window IDs
-- support per-opening lintel profile overrides
-- support multiple lintels over an opening
 - support explicit lintel offsets for the less common cases where a lintel sits
   outside the wall framing envelope
 - assign colours by generated framing class

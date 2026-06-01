@@ -9,7 +9,7 @@
 
 ## 1. The idea in one sentence
 
-Build an iQs wall-framing generator that reads a selected Vectorworks Wall PIO, derives the wall run, height, openings and selected stud-framing component, then generates plates, studs, noggings/blocking, jamb/trimmer studs, lintel/header framing and optional extra members as independent iQs framing objects or sub-objects, with stored quantities and cost-plan data.
+Build an iQs wall-framing generator that reads a selected Vectorworks Wall PIO, derives the wall run, height, openings and selected stud-framing component, then generates plates, studs, noggings/blocking, jamb/trimmer studs, lintels and optional extra members as independent iQs framing objects or sub-objects, with stored quantities and cost-plan data.
 
 This is not trying to make the native Vectorworks framing command better. It is a separate QS/detailing-first framing system that uses the Wall PIO as the host/reference geometry.
 
@@ -157,8 +157,8 @@ For v1, use rectangular generated solids inside the parent PIO:
 - top plates: horizontal prisms along top
 - noggings/blocking: horizontal short prisms between studs
 - jamb studs: vertical prisms each side of openings
-- trimmer/jack studs: vertical prisms supporting lintels/headers
-- lintel/header: horizontal prism over opening
+- trimmer/jack studs: vertical prisms supporting lintels
+- lintel: horizontal prism over opening
 - sill/tray framing: optional horizontal member under windows
 
 ---
@@ -248,7 +248,7 @@ The generator dialog should have four tabs.
 - detect all wall inserts
 - jamb studs each side
 - jack/trimmer studs each side
-- header/lintel member count
+- lintel member count
 - sill member under windows
 - jack stud spacing above/below openings
 - ignore openings below minimum width
@@ -334,7 +334,7 @@ Mandatory v1 quantities:
 - stud count
 - plate lineal metres
 - nogging/blocking count and lineal metres
-- header/lintel count and lineal metres
+- lintel count and lineal metres
 - jamb/trimmer stud count and lineal metres
 - total timber/steel lineal metres by size/grade
 - total member count
@@ -349,7 +349,7 @@ Suggested rollup output:
 | 90x45 MGP10 studs | count + lm |
 | 90x45 MGP10 plates | lm |
 | 90x45 MGP10 noggings | count + lm |
-| 140x45 lintels/headers | count + lm |
+| 140x45 lintels | count + lm |
 | Labour install wall framing | m2 or lm |
 | Fixings/consumables | % or m2 allowance |
 
@@ -463,9 +463,9 @@ For each opening:
 1. Remove regular studs that clash with clear opening span.
 2. Add jamb studs each side.
 3. Add jack/trimmer studs each side.
-4. Add header/lintel over opening.
+4. Add lintel over opening.
 5. Add sill member under window if applicable.
-6. Add jack studs above header and/or below sill at spacing rule.
+6. Add jack studs above lintel and/or below sill at spacing rule.
 
 ### 12.4 Plates
 
@@ -547,8 +547,8 @@ Implementation options:
   in the current prototype;
 - assign colours by generated framing class;
 - allow materials to be allocated to framing members;
-- optionally add a window/door ledger beneath lintels over a configurable
-  height, defaulting to `120 mm`. The
+- optionally add window/door ledgers above and beneath lintels over a
+  configurable height, defaulting to `120 mm`. The
   ledger is generally stud-sized, installed length-long by height-short, with
   its underside governed by the window or door head height. Lintel support
   detailing for above-opening jack studs should use total lintel depth: run the
@@ -556,8 +556,15 @@ Implementation options:
   the lintel is less than half the stud width, but terminate it at the lintel
   top when the total depth is at least half the stud width, including built-up
   lintels such as `2 x 32 mm = 64 mm`; implemented in the current prototype for
-  the nominated single lintel profile. A settings override can continue upper
+  the nominated default lintel profile. A settings override can continue upper
   jack studs to the lintel underside;
+- expose a scrollable per-opening lintel table in the Openings tab, keyed
+  internally and labelled with the visible Vectorworks window or door ID. The
+  lintel ID, built-up lintel count and profile dimensions can be overridden;
+  user-nominated lintel IDs prevail verbatim, while automatic member IDs are
+  numbered across the generated wall run. The overrides persist inside the
+  Vectorworks document on `iQs_Opening` records attached to the inserted door
+  and window PIOs; implemented in the current prototype;
 - store member metadata in a JSON blob/record field on the parent PIO;
 - optionally create lightweight 2D elevation lines/rectangles for documentation.
 

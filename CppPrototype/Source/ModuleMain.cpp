@@ -25,6 +25,7 @@ namespace
     constexpr const char* kPluginVWRIdentifier = "iQsWallFramer";
     constexpr const char* kMenuUniversalName   = "iQs Probe Selected Walls For Framing";
     constexpr const char* kHostRecordName      = "iQs_Host";
+    constexpr const char* kOpeningRecordName   = "iQs_Opening";
     constexpr const char* kFrameRecordName     = "iQs_StudWallFrame";
     constexpr const char* kExtruderRecordName  = "iQs Extruder V0.1";
     constexpr const char* kGeneratedClassName  = "Wall-Timber Frame";
@@ -63,6 +64,7 @@ namespace
         bool detectDoors = true;
         bool detectWindows = true;
         bool generateLedgers = true;
+        bool generateUpperLedgers = false;
         bool continueJackStudsToLintelUnderside = false;
         Sint32 jambStudCount = 1;
         Sint32 trimmerStudCount = 1;
@@ -132,6 +134,37 @@ namespace
         return out.str();
     }
 
+    std::string WholeMm(double value)
+    {
+        return std::to_string(static_cast<long long>(std::llround(value)));
+    }
+
+    double PositiveDoubleOrDefault(const TXString& value, double fallback)
+    {
+        if (value.IsEmpty()) { return fallback; }
+        try
+        {
+            return std::max(1.0, std::stod(value.GetCharPtr()));
+        }
+        catch (...)
+        {
+            return fallback;
+        }
+    }
+
+    Sint32 PositiveIntegerOrDefault(const TXString& value, Sint32 fallback)
+    {
+        if (value.IsEmpty()) { return fallback; }
+        try
+        {
+            return std::max<Sint32>(1, static_cast<Sint32>(std::stoi(value.GetCharPtr())));
+        }
+        catch (...)
+        {
+            return fallback;
+        }
+    }
+
     std::string Bool(bool value)
     {
         return value ? "true" : "false";
@@ -195,6 +228,18 @@ namespace
         TFormatHandler format(kHostRecordName);
         EnsureTextField(format, "iqs_uuid");
         EnsureTextField(format, "source_type", "VW_WALL_PIO");
+        EnsureTextField(format, "last_framed_unix");
+    }
+
+    void EnsureOpeningRecordFormat()
+    {
+        TFormatHandler format(kOpeningRecordName);
+        EnsureTextField(format, "iqs_uuid");
+        EnsureTextField(format, "source_type", "VW_WALL_OPENING_PIO");
+        EnsureTextField(format, "lintel_id");
+        EnsureTextField(format, "lintel_count", "1");
+        EnsureTextField(format, "lintel_width_mm");
+        EnsureTextField(format, "lintel_height_mm");
         EnsureTextField(format, "last_framed_unix");
     }
 
@@ -305,6 +350,27 @@ namespace
         return uuid;
     }
 
+    MCObjectHandle EnsureOpeningRecord(MCObjectHandle opening)
+    {
+        EnsureOpeningRecordFormat();
+        MCObjectHandle record =
+            VWFC::VWObjects::VWRecordObj::GetRecordObject(opening, kOpeningRecordName);
+        if (!record)
+        {
+            TFormatHandler format(kOpeningRecordName);
+            record = format.AttachRecordToObject(opening);
+        }
+
+        TXString uuid = GetRecordText(record, "iqs_uuid");
+        if (uuid.IsEmpty())
+        {
+            uuid = NewUUID().c_str();
+            SetRecordText(record, "iqs_uuid", uuid);
+        }
+        SetRecordText(record, "source_type", "VW_WALL_OPENING_PIO");
+        return record;
+    }
+
     void EnsureUniqueSelectedHostUUIDs(const std::vector<MCObjectHandle>& walls)
     {
         std::set<std::string> usedUUIDs;
@@ -405,7 +471,7 @@ namespace
         if (memberType == "JAMB_STUD") { return "Jamb stud"; }
         if (memberType == "TRIMMER_STUD") { return "Trimmer stud"; }
         if (memberType == "JACK_STUD") { return "Jack stud"; }
-        if (memberType == "HEADER") { return "Header"; }
+        if (memberType == "LINTEL" || memberType == "HEADER") { return "Lintel"; }
         if (memberType == "SILL") { return "Window sill"; }
         if (memberType == "LEDGER") { return "Window and door ledger"; }
         if (memberType == "NOGGING") { return "Nogging"; }
@@ -498,12 +564,29 @@ namespace
 
     struct WallOpening
     {
+        MCObjectHandle handle = nullptr;
+        std::string key;
+        std::string userID;
         std::string type;
         double stationMm = 0.0;
         double widthMm = 0.0;
         double bottomMm = 0.0;
         double topMm = 0.0;
+        double lintelWidthMm = 0.0;
+        double lintelHeightMm = 0.0;
+        Sint32 lintelCount = 1;
+        std::string lintelID;
     };
+
+    struct OpeningLintelOverride
+    {
+        double widthMm = 0.0;
+        double heightMm = 0.0;
+        Sint32 count = 1;
+        std::string lintelID;
+    };
+
+    std::map<std::string, OpeningLintelOverride> gOpeningLintelOverrides;
 
     struct PlateExtents
     {
@@ -976,6 +1059,13 @@ namespace
             VWFC::VWObjects::VWParametricObj parametric(insert);
             const TXString parametricName = parametric.GetParametricName();
             WallOpening opening;
+            opening.handle = insert;
+            MCObjectHandle openingRecord = EnsureOpeningRecord(insert);
+            opening.key = GetRecordText(openingRecord, "iqs_uuid").GetCharPtr();
+            opening.userID =
+                std::string(parametric.GetParamString("IDPrefix").GetCharPtr()) +
+                std::string(parametric.GetParamString("IDLabel").GetCharPtr()) +
+                std::string(parametric.GetParamString("IDSuffix").GetCharPtr());
             opening.stationMm = brk.offset;
             const double frameBottom =
                 Interpolate(frameBottomStart, frameBottomEnd, opening.stationMm, wallLength);
@@ -1012,6 +1102,32 @@ namespace
             }
 
             if (opening.widthMm <= 0.0 || opening.topMm <= opening.bottomMm) { continue; }
+            const auto overrideIt = gOpeningLintelOverrides.find(opening.key);
+            const TXString storedWidth = GetRecordText(openingRecord, "lintel_width_mm");
+            const TXString storedHeight = GetRecordText(openingRecord, "lintel_height_mm");
+            const TXString storedCount = GetRecordText(openingRecord, "lintel_count");
+            const TXString storedID = GetRecordText(openingRecord, "lintel_id");
+            const double persistedWidth =
+                PositiveDoubleOrDefault(storedWidth, gSettings.headerWidthMm);
+            const double persistedHeight =
+                PositiveDoubleOrDefault(storedHeight, gSettings.headerHeightMm);
+            const Sint32 persistedCount = PositiveIntegerOrDefault(storedCount, 1);
+            opening.lintelWidthMm =
+                overrideIt != gOpeningLintelOverrides.end()
+                    ? overrideIt->second.widthMm
+                    : persistedWidth;
+            opening.lintelHeightMm =
+                overrideIt != gOpeningLintelOverrides.end()
+                    ? overrideIt->second.heightMm
+                    : persistedHeight;
+            opening.lintelCount =
+                overrideIt != gOpeningLintelOverrides.end()
+                    ? overrideIt->second.count
+                    : persistedCount;
+            opening.lintelID =
+                overrideIt != gOpeningLintelOverrides.end()
+                    ? overrideIt->second.lintelID
+                    : storedID.GetCharPtr();
             const bool duplicate = std::any_of(openings.begin(), openings.end(),
                                                [&](const WallOpening& existing) {
                 return existing.type == opening.type &&
@@ -1025,7 +1141,9 @@ namespace
         return openings;
     }
 
-    GeneratedFrame GenerateSimpleFrame(MCObjectHandle wall, const PlateExtents& plateExtents)
+    GeneratedFrame GenerateSimpleFrame(
+        MCObjectHandle wall, const PlateExtents& plateExtents,
+        std::map<std::string, size_t>& memberNameCounters)
     {
         const double kStudWidthMm = gSettings.studWidthMm;
         const double kStudSpacingMm = gSettings.studSpacingMm;
@@ -1084,7 +1202,6 @@ namespace
         gSDK->SetObjectName(result.group, frameName.c_str());
         gSDK->SetObjectClass(result.group, GeneratedFrameGroupClassID());
 
-        std::map<std::string, size_t> memberNameCounters;
         auto nextMemberName = [&](const TXString& prefix) {
             const std::string prefixText = prefix.GetCharPtr();
             std::ostringstream name;
@@ -1100,10 +1217,15 @@ namespace
                              double memberLength, double memberWidth, double memberHeight,
                              const TXString& axisSemantic,
                              const TXString& profileDimASemantic,
-                             const TXString& profileDimBSemantic) {
+                             const TXString& profileDimBSemantic,
+                             double centerOffsetMm =
+                                 std::numeric_limits<double>::quiet_NaN()) {
             MCObjectHandle memberHandle =
                 AddRectangularMember(group, start, along, normal, stationStart, alongLength,
-                                     component.centerOffsetMm, geometryDepth, zStart, zHeight,
+                                     std::isnan(centerOffsetMm)
+                                         ? component.centerOffsetMm
+                                         : centerOffsetMm,
+                                     geometryDepth, zStart, zHeight,
                                      type);
             if (!memberHandle)
             {
@@ -1250,23 +1372,34 @@ namespace
             double topMm = 0.0;
         };
 
-        auto ledgerHeightForOpening = [&](const WallOpening&) {
+        auto lowerLedgerHeightForOpening = [&](const WallOpening& opening) {
             return gSettings.generateLedgers &&
-                           kHeaderHeightMm > gSettings.ledgerTriggerHeightMm
+                           opening.lintelHeightMm > gSettings.ledgerTriggerHeightMm
+                       ? kStudWidthMm
+                       : 0.0;
+        };
+        auto upperLedgerHeightForOpening = [&](const WallOpening& opening) {
+            return gSettings.generateUpperLedgers &&
+                           opening.lintelHeightMm > gSettings.ledgerTriggerHeightMm
                        ? kStudWidthMm
                        : 0.0;
         };
         auto lintelBottomForOpening = [&](const WallOpening& opening) {
-            return opening.topMm + ledgerHeightForOpening(opening);
+            return opening.topMm + lowerLedgerHeightForOpening(opening);
         };
         auto lintelTopForOpening = [&](const WallOpening& opening) {
-            return lintelBottomForOpening(opening) + kHeaderHeightMm;
+            return lintelBottomForOpening(opening) + opening.lintelHeightMm;
         };
-        auto upperJackBottomForOpening = [&](const WallOpening& opening) {
-            return gSettings.continueJackStudsToLintelUnderside ||
-                           kHeaderHeightMm < kStudWidthMm / 2.0
-                       ? lintelBottomForOpening(opening)
-                       : lintelTopForOpening(opening);
+        auto lintelAssemblyTopForOpening = [&](const WallOpening& opening) {
+            return lintelTopForOpening(opening) + upperLedgerHeightForOpening(opening);
+        };
+        auto verticalBottomAboveLintel = [&](const WallOpening& opening) {
+            return upperLedgerHeightForOpening(opening) > 0.0
+                       ? lintelAssemblyTopForOpening(opening)
+                       : gSettings.continueJackStudsToLintelUnderside ||
+                           opening.lintelHeightMm < kStudWidthMm / 2.0
+                             ? lintelBottomForOpening(opening)
+                             : lintelTopForOpening(opening);
         };
 
         auto splitVerticalRangeForOpenings =
@@ -1308,7 +1441,7 @@ namespace
                         {
                             segments[0].bottomMm =
                                 std::max(segments[0].bottomMm,
-                                         lintelTopForOpening(opening));
+                                         verticalBottomAboveLintel(opening));
                         }
                     }
 
@@ -1334,7 +1467,7 @@ namespace
                     const double framedOpeningBottom =
                         opening.bottomMm -
                         (opening.type == "WINDOW" ? gSettings.sillHeightMm : 0.0);
-                    const double framedOpeningTop = lintelTopForOpening(opening);
+                    const double framedOpeningTop = verticalBottomAboveLintel(opening);
                     for (const VerticalSegment& segment : segments)
                     {
                         if (segment.topMm <= framedOpeningBottom + 0.001 ||
@@ -1531,24 +1664,49 @@ namespace
                 static_cast<double>(gSettings.trimmerStudCount) * kStudWidthMm;
             const double headerStart = openingLeft - trimmerPackWidth;
             const double headerLength = opening.widthMm + 2.0 * trimmerPackWidth;
-            const double ledgerHeight = ledgerHeightForOpening(opening);
-            if (ledgerHeight > 0.0)
+            const double lowerLedgerHeight = lowerLedgerHeightForOpening(opening);
+            if (lowerLedgerHeight > 0.0)
             {
                 addMember(nextMemberName(MemberPrefix("LEDGER")), "LEDGER",
                           headerStart, headerLength,
-                          opening.topMm, ledgerHeight, gSettings.studDepthMm,
+                          opening.topMm, lowerLedgerHeight, gSettings.studDepthMm,
                           opening.stationMm,
-                          headerLength, gSettings.studDepthMm, ledgerHeight,
+                          headerLength, gSettings.studDepthMm, lowerLedgerHeight,
                           "Height", "Length", "Width");
             }
-            addMember(nextMemberName(opening.type == "WINDOW"
-                                         ? gSettings.lintelPrefix
-                                         : gSettings.doorHeadPrefix),
-                      "HEADER", headerStart, headerLength,
-                      lintelBottomForOpening(opening), kHeaderHeightMm,
-                      gSettings.headerWidthMm, opening.stationMm,
-                      headerLength, gSettings.headerWidthMm, kHeaderHeightMm,
-                      "Height", "Length", "Width");
+            const TXString lintelPrefix =
+                opening.lintelID.empty()
+                    ? (opening.type == "WINDOW"
+                           ? gSettings.lintelPrefix
+                           : gSettings.doorHeadPrefix)
+                    : TXString(opening.lintelID.c_str());
+            for (Sint32 lintelIndex = 0; lintelIndex < opening.lintelCount; ++lintelIndex)
+            {
+                const double centerOffset =
+                    component.centerOffsetMm +
+                    (static_cast<double>(lintelIndex) -
+                     (static_cast<double>(opening.lintelCount) - 1.0) / 2.0) *
+                        opening.lintelWidthMm;
+                addMember(opening.lintelID.empty()
+                              ? nextMemberName(lintelPrefix)
+                              : opening.lintelID,
+                          "LINTEL",
+                          headerStart, headerLength,
+                          lintelBottomForOpening(opening), opening.lintelHeightMm,
+                          opening.lintelWidthMm, opening.stationMm,
+                          headerLength, opening.lintelWidthMm, opening.lintelHeightMm,
+                          "Height", "Length", "Width", centerOffset);
+            }
+            const double upperLedgerHeight = upperLedgerHeightForOpening(opening);
+            if (upperLedgerHeight > 0.0)
+            {
+                addMember(nextMemberName(MemberPrefix("LEDGER")), "LEDGER",
+                          headerStart, headerLength,
+                          lintelTopForOpening(opening), upperLedgerHeight,
+                          gSettings.studDepthMm, opening.stationMm,
+                          headerLength, gSettings.studDepthMm, upperLedgerHeight,
+                          "Height", "Length", "Width");
+            }
 
             if (opening.type == "WINDOW")
             {
@@ -1560,7 +1718,7 @@ namespace
                           "Width", "Length", "Height");
             }
 
-            const double upperJackBottom = upperJackBottomForOpening(opening);
+            const double upperJackBottom = verticalBottomAboveLintel(opening);
             const double lowerJackTop = opening.bottomMm - gSettings.sillHeightMm;
             std::vector<double> lowerJackStations;
             auto addLowerJack = [&](double station) {
@@ -2177,10 +2335,48 @@ namespace
         if (settings.ledgerPrefix.IsEmpty()) { settings.ledgerPrefix = "LED"; }
     }
 
+    std::vector<WallOpening> FindSelectedWallOpenings(const std::vector<MCObjectHandle>& walls)
+    {
+        std::vector<WallOpening> openings;
+        for (MCObjectHandle wall : walls)
+        {
+            VWFC::VWObjects::VWWallObj wallObj(wall);
+            if (wallObj.IsRound()) { continue; }
+
+            const auto start = wallObj.GetStartPoint();
+            const auto end = wallObj.GetEndPoint();
+            const double wallLength = Distance(start, end);
+            WallVerticalProfile wallProfile;
+            if (wallLength <= 0.0 || !GetLinearWallProfile(wallObj, wallProfile)) { continue; }
+
+            const FramingComponent component = FindFramingComponent(wall, wallObj);
+            if (!component.found) { continue; }
+            wallProfile.bottomStartMm += component.bottomOffsetMm;
+            wallProfile.bottomEndMm += component.bottomOffsetMm;
+
+            const std::vector<WallOpening> wallOpenings =
+                FindWallOpenings(wallObj, wallProfile.bottomStartMm,
+                                 wallProfile.bottomEndMm, wallLength);
+            openings.insert(openings.end(), wallOpenings.begin(), wallOpenings.end());
+        }
+        return openings;
+    }
+
+    enum class EOpeningListColumn
+    {
+        UserID = 0,
+        Type,
+        OpeningSize,
+        LintelID,
+        LintelCount,
+        LintelWidth,
+        LintelHeight
+    };
+
     class CFramingSettingsDialog : public VWDialog
     {
     public:
-        CFramingSettingsDialog()
+        CFramingSettingsDialog(const std::vector<MCObjectHandle>& walls)
             : fTabs(100), fWallPane(101), fMembersPane(102), fOpeningsPane(103),
               fNoggingsPane(104), fAdvancedPane(105),
               fComponentLabel(110), fComponentEdit(111), fClassLabel(112), fClassEdit(113),
@@ -2191,7 +2387,7 @@ namespace
               fHeaderHeightLabel(130), fHeaderHeightEdit(131),
               fHeaderWidthLabel(132), fHeaderWidthEdit(133),
               fDetectDoors(140), fDetectWindows(141),
-              fGenerateLedgers(195), fLedgerTriggerHeightLabel(198),
+              fGenerateUpperLedgers(202), fGenerateLedgers(195), fLedgerTriggerHeightLabel(198),
               fLedgerTriggerHeightEdit(199), fContinueJackStudsToLintelUnderside(200),
               fJambStudCountLabel(142), fJambStudCountEdit(143),
               fTrimmerStudCountLabel(144), fTrimmerStudCountEdit(145),
@@ -2212,11 +2408,24 @@ namespace
               fLintelPrefixLabel(172), fLintelPrefixEdit(173),
               fDoorHeadPrefixLabel(174), fDoorHeadPrefixEdit(175),
               fLedgerPrefixLabel(196), fLedgerPrefixEdit(197),
+              fOpeningList(201),
               fProfileMemberHeader(176), fProfileWidthHeader(177), fProfileHeightHeader(178),
               fStudDepthEdit(179), fPlateWidthEdit(180), fNoggingWidthEdit(181),
               fSillLabel(182), fSillWidthEdit(183), fSillHeightEdit(184)
         {
             fSettings = gSettings;
+            fOpeningRows = FindSelectedWallOpenings(walls);
+            std::map<std::string, size_t> labelCounts;
+            for (WallOpening& opening : fOpeningRows)
+            {
+                const std::string baseLabel =
+                    opening.userID.empty()
+                        ? (opening.type == "WINDOW" ? "Unnamed window" : "Unnamed door")
+                        : opening.userID;
+                const size_t count = ++labelCounts[baseLabel];
+                opening.userID =
+                    count == 1 ? baseLabel : baseLabel + " (" + std::to_string(count) + ")";
+            }
         }
 
         bool Run()
@@ -2225,9 +2434,22 @@ namespace
             {
                 return false;
             }
-            SanitizeSettings(fSettings);
-            gSettings = fSettings;
-            return true;
+        SanitizeSettings(fSettings);
+        gSettings = fSettings;
+        for (const WallOpening& opening : fOpeningRows)
+        {
+            gOpeningLintelOverrides[opening.key] =
+                { opening.lintelWidthMm, opening.lintelHeightMm,
+                  opening.lintelCount, opening.lintelID };
+            MCObjectHandle record = EnsureOpeningRecord(opening.handle);
+            SetRecordText(record, "lintel_id", opening.lintelID.c_str());
+            SetRecordText(record, "lintel_count", TXString::ToStringInt(opening.lintelCount));
+            SetRecordText(record, "lintel_width_mm", Num(opening.lintelWidthMm).c_str());
+            SetRecordText(record, "lintel_height_mm", Num(opening.lintelHeightMm).c_str());
+            SetRecordText(record, "last_framed_unix",
+                          TXString::ToStringInt(static_cast<Sint32>(Now())));
+        }
+        return true;
         }
 
     protected:
@@ -2286,10 +2508,12 @@ namespace
 
             if (!fDetectDoors.CreateControl(this, "Frame door openings") ||
                 !fDetectWindows.CreateControl(this, "Frame window openings") ||
+                !fGenerateUpperLedgers.CreateControl(this, "Add ledgers above deep lintels") ||
                 !fGenerateLedgers.CreateControl(this, "Add ledgers beneath deep lintels") ||
                 !fLedgerTriggerHeightLabel.CreateControl(this, "Ledger required above lintel height:", 34) ||
                 !fLedgerTriggerHeightEdit.CreateControl(this, fSettings.ledgerTriggerHeightMm, 14, VWEditRealCtrl::kEditControlDimension) ||
                 !fContinueJackStudsToLintelUnderside.CreateControl(this, "Continue jack studs to underside of lintel") ||
+                !fOpeningList.CreateControl(this, 86, 10) ||
                 !fJambStudCountLabel.CreateControl(this, "Jamb studs per opening side:", 28) ||
                 !fJambStudCountEdit.CreateControl(this, fSettings.jambStudCount, 14) ||
                 !fTrimmerStudCountLabel.CreateControl(this, "Trimmer studs per jamb:", 28) ||
@@ -2362,13 +2586,15 @@ namespace
 
             fOpeningsPane.AddFirstGroupControl(&fDetectDoors);
             this->AddBelowControl(&fDetectDoors, &fDetectWindows);
-            this->AddBelowControl(&fDetectWindows, &fGenerateLedgers);
+            this->AddBelowControl(&fDetectWindows, &fGenerateUpperLedgers);
+            this->AddBelowControl(&fGenerateUpperLedgers, &fGenerateLedgers);
             this->AddBelowControl(&fGenerateLedgers, &fLedgerTriggerHeightLabel);
             this->AddRightControl(&fLedgerTriggerHeightLabel, &fLedgerTriggerHeightEdit);
             this->AddBelowControl(&fLedgerTriggerHeightLabel, &fContinueJackStudsToLintelUnderside);
             this->AddBelowControl(&fContinueJackStudsToLintelUnderside, &fJambStudCountLabel);
             this->AddRightControl(&fJambStudCountLabel, &fJambStudCountEdit);
             AddLabelledControl(fTrimmerStudCountLabel, fTrimmerStudCountEdit, &fJambStudCountLabel);
+            this->AddBelowControl(&fTrimmerStudCountLabel, &fOpeningList);
 
             fNoggingsPane.AddFirstGroupControl(&fGenerateNoggings);
             this->AddBelowControl(&fGenerateNoggings, &fNoggingCentresLabel);
@@ -2394,6 +2620,26 @@ namespace
             return true;
         }
 
+        virtual void OnInitializeContent() override
+        {
+            VWDialog::OnInitializeContent();
+            fOpeningList.EnableSorting(false);
+            fOpeningList.EnableDirectEdit(true);
+            fOpeningList.EnableColumnLines(true);
+            fOpeningList.AddColumn("Window / door ID", 150);
+            fOpeningList.AddColumn("Type", 80);
+            fOpeningList.AddColumn("Opening size", 110);
+            fOpeningList.AddColumn("Lintel ID", 80);
+            fOpeningList.AddColumn("Count", 55);
+            fOpeningList.AddColumn("Lintel width", 90);
+            fOpeningList.AddColumn("Lintel height", 90);
+            for (size_t row = 0; row < fOpeningRows.size(); ++row)
+            {
+                fOpeningList.AddRow("");
+                SetOpeningRow(row);
+            }
+        }
+
         virtual void OnDDXInitialize() override
         {
             this->AddDDX_EditText(111, &fSettings.componentName);
@@ -2409,6 +2655,7 @@ namespace
             this->AddDDX_EditReal(133, &fSettings.headerWidthMm, VWEditRealCtrl::kEditControlDimension);
             this->AddDDX_CheckButton(140, &fSettings.detectDoors);
             this->AddDDX_CheckButton(141, &fSettings.detectWindows);
+            this->AddDDX_CheckButton(202, &fSettings.generateUpperLedgers);
             this->AddDDX_CheckButton(195, &fSettings.generateLedgers);
             this->AddDDX_EditReal(199, &fSettings.ledgerTriggerHeightMm, VWEditRealCtrl::kEditControlDimension);
             this->AddDDX_CheckButton(200, &fSettings.continueJackStudsToLintelUnderside);
@@ -2439,6 +2686,113 @@ namespace
         }
 
     private:
+        void SetOpeningRow(size_t row)
+        {
+            if (row >= fOpeningRows.size()) { return; }
+            const WallOpening& opening = fOpeningRows[row];
+            fOpeningList.GetItem(row, static_cast<size_t>(EOpeningListColumn::UserID))
+                .SetItemText(opening.userID.c_str());
+            fOpeningList.GetItem(row, static_cast<size_t>(EOpeningListColumn::Type))
+                .SetItemText(opening.type == "WINDOW" ? "Window" : "Door");
+            fOpeningList.GetItem(row, static_cast<size_t>(EOpeningListColumn::OpeningSize))
+                .SetItemText((WholeMm(opening.widthMm) + " x " +
+                              WholeMm(opening.topMm - opening.bottomMm)).c_str());
+            VWListBrowserItem lintelIDItem =
+                fOpeningList.GetItem(row, static_cast<size_t>(EOpeningListColumn::LintelID));
+            lintelIDItem.SetItemText(opening.lintelID.c_str());
+            lintelIDItem.SetItemInteractionType(kListBrowserItemInteractionEditText);
+            VWListBrowserItem countItem =
+                fOpeningList.GetItem(row, static_cast<size_t>(EOpeningListColumn::LintelCount));
+            countItem.SetItemText(std::to_string(opening.lintelCount).c_str());
+            countItem.SetItemInteractionType(kListBrowserItemInteractionEditText);
+            VWListBrowserItem widthItem =
+                fOpeningList.GetItem(row, static_cast<size_t>(EOpeningListColumn::LintelWidth));
+            widthItem.SetItemText(WholeMm(opening.lintelWidthMm).c_str());
+            widthItem.SetItemInteractionType(kListBrowserItemInteractionEditText);
+            VWListBrowserItem heightItem =
+                fOpeningList.GetItem(row, static_cast<size_t>(EOpeningListColumn::LintelHeight));
+            heightItem.SetItemText(WholeMm(opening.lintelHeightMm).c_str());
+            heightItem.SetItemInteractionType(kListBrowserItemInteractionEditText);
+        }
+
+        void OnOpeningListDirectEdit(TControlID, VWListBrowserEventArgs& eventArgs)
+        {
+            size_t row = 0;
+            size_t column = 0;
+            const EListBrowserDirectEditType type = eventArgs.GetType(row, column);
+            if (type != EListBrowserDirectEditType::ItemEditCompletionData ||
+                row >= fOpeningRows.size() ||
+                (column != static_cast<size_t>(EOpeningListColumn::LintelID) &&
+                 column != static_cast<size_t>(EOpeningListColumn::LintelCount) &&
+                 column != static_cast<size_t>(EOpeningListColumn::LintelWidth) &&
+                 column != static_cast<size_t>(EOpeningListColumn::LintelHeight)))
+            {
+                return;
+            }
+
+            const TXString& value = eventArgs.GetCellString().fNewStringValue;
+            WallOpening& opening = fOpeningRows[row];
+            if (column == static_cast<size_t>(EOpeningListColumn::LintelID))
+            {
+                opening.lintelID = value.GetCharPtr();
+                SetOpeningRow(row);
+                eventArgs.SetValidEditCompletionData();
+                return;
+            }
+
+            if (column == static_cast<size_t>(EOpeningListColumn::LintelCount))
+            {
+                Sint32 parsed = 0;
+                try
+                {
+                    parsed = static_cast<Sint32>(std::stoi(value.GetCharPtr()));
+                }
+                catch (...)
+                {
+                    eventArgs.SetInvalidEditCompletionData();
+                    return;
+                }
+                if (parsed <= 0)
+                {
+                    eventArgs.SetInvalidEditCompletionData();
+                    return;
+                }
+                opening.lintelCount = parsed;
+                SetOpeningRow(row);
+                eventArgs.SetValidEditCompletionData();
+                return;
+            }
+
+            double parsed = 0.0;
+            try
+            {
+                parsed = std::stod(value.GetCharPtr());
+            }
+            catch (...)
+            {
+                eventArgs.SetInvalidEditCompletionData();
+                return;
+            }
+            if (parsed <= 0.0)
+            {
+                eventArgs.SetInvalidEditCompletionData();
+                return;
+            }
+
+            if (column == static_cast<size_t>(EOpeningListColumn::LintelWidth))
+            {
+                opening.lintelWidthMm = parsed;
+            }
+            else
+            {
+                opening.lintelHeightMm = parsed;
+            }
+            SetOpeningRow(row);
+            eventArgs.SetValidEditCompletionData();
+        }
+
+        DEFINE_EVENT_DISPATH_MAP;
+
         template<class TControl>
         void AddLabelledControl(VWStaticTextCtrl& label, TControl& control,
                                 VWStaticTextCtrl* previousLabel)
@@ -2456,6 +2810,7 @@ namespace
         }
 
         FramingSettings fSettings;
+        std::vector<WallOpening> fOpeningRows;
         VWTabCtrl fTabs;
         VWTabPaneCtrl fWallPane;
         VWTabPaneCtrl fMembersPane;
@@ -2482,6 +2837,7 @@ namespace
         VWEditRealCtrl fHeaderWidthEdit;
         VWCheckButtonCtrl fDetectDoors;
         VWCheckButtonCtrl fDetectWindows;
+        VWCheckButtonCtrl fGenerateUpperLedgers;
         VWCheckButtonCtrl fGenerateLedgers;
         VWStaticTextCtrl fLedgerTriggerHeightLabel;
         VWEditRealCtrl fLedgerTriggerHeightEdit;
@@ -2525,6 +2881,7 @@ namespace
         VWEditTextCtrl fDoorHeadPrefixEdit;
         VWStaticTextCtrl fLedgerPrefixLabel;
         VWEditTextCtrl fLedgerPrefixEdit;
+        VWListBrowserCtrl fOpeningList;
         VWStaticTextCtrl fProfileMemberHeader;
         VWStaticTextCtrl fProfileWidthHeader;
         VWStaticTextCtrl fProfileHeightHeader;
@@ -2535,6 +2892,10 @@ namespace
         VWEditRealCtrl fSillWidthEdit;
         VWEditRealCtrl fSillHeightEdit;
     };
+
+    EVENT_DISPATCH_MAP_BEGIN(CFramingSettingsDialog);
+    ADD_LB_DIRECT_EDIT(201, OnOpeningListDirectEdit);
+    EVENT_DISPATCH_MAP_END;
 }
 
 class CMenuSink : public VCOMImpl<VectorWorks::Extension::IMenuEventSink>
@@ -2571,7 +2932,7 @@ public:
             }
         });
 
-        CFramingSettingsDialog settingsDialog;
+        CFramingSettingsDialog settingsDialog(walls);
         if (!settingsDialog.Run()) { return 0; }
 
         EnsureUniqueSelectedHostUUIDs(walls);
@@ -2609,6 +2970,7 @@ public:
         size_t missingComponentCount = 0;
         const auto generateFrames = [&](bool reportCleanup) {
             frames.clear();
+            std::map<std::string, size_t> memberNameCounters;
             for (MCObjectHandle wall : walls)
             {
                 VWFC::VWObjects::VWWallObj wallObj(wall);
@@ -2637,7 +2999,7 @@ public:
                 }
 
                 GeneratedFrame frame = GenerateSimpleFrame(
-                    wall, FindPlateExtents(wall, contextWalls));
+                    wall, FindPlateExtents(wall, contextWalls), memberNameCounters);
                 if (frame.group) { frames.push_back(frame); }
             }
         };
