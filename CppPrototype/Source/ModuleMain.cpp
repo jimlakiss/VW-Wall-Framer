@@ -27,14 +27,14 @@ namespace
     constexpr const char* kHostRecordName      = "iQs_Host";
     constexpr const char* kFrameRecordName     = "iQs_StudWallFrame";
     constexpr const char* kExtruderRecordName  = "iQs Extruder V0.1";
-    constexpr const char* kGeneratedClassName  = "iQs-Wall Framing";
+    constexpr const char* kGeneratedClassName  = "Wall-Timber Frame";
     constexpr const char* kRequiredComponentName = "Timber Frame";
     constexpr const char* kSchema              = "iqs_wall_framing_probe_v0_1";
     constexpr const char* kGenerationSchema    = "iqs_stud_wall_frame_generation_v0_1";
     constexpr double kStudWidthMm              = 45.0;
     constexpr double kStudSpacingMm            = 450.0;
     constexpr double kPlateHeightMm            = 45.0;
-    constexpr double kHeaderHeightMm           = 240.0;
+    constexpr double kHeaderHeightMm           = 45.0;
     constexpr double kNoggingHeightMm          = 45.0;
     constexpr double kNoggingCentresMm         = 1350.0;
     constexpr size_t kBottomPlateCount         = 1;
@@ -61,7 +61,7 @@ namespace
         Sint32 topPlateCount = static_cast<Sint32>(kTopPlateCount);
         bool detectDoors = true;
         bool detectWindows = true;
-        Sint32 kingStudCount = 1;
+        Sint32 jambStudCount = 1;
         Sint32 trimmerStudCount = 1;
         bool generateNoggings = true;
         bool generateCornerStuds = true;
@@ -69,6 +69,11 @@ namespace
         TXString bottomPlatePrefix = "BP";
         TXString topPlatePrefix = "TP";
         TXString studPrefix = "S";
+        TXString endStudPrefix = "ES";
+        TXString cornerStudPrefix = "CS";
+        TXString jambStudPrefix = "JAM";
+        TXString trimmerStudPrefix = "TR";
+        TXString jackStudPrefix = "JS";
         TXString noggingPrefix = "NOG";
         TXString windowSillPrefix = "WS";
         TXString lintelPrefix = "LIN";
@@ -361,11 +366,65 @@ namespace
         return "";
     }
 
-    InternalIndex GeneratedClassID()
+    InternalIndex GeneratedFrameGroupClassID()
     {
-        const InternalIndex classID = gSDK->AddClass(gSettings.generatedClassName);
+        const TXString className = gSettings.generatedClassName + "-Frame group";
+        const InternalIndex classID = gSDK->AddClass(className);
         gSDK->SetClassVisibility(classID, true);
         return classID;
+    }
+
+    struct ActiveClassGuard
+    {
+        ActiveClassGuard()
+            : classID(gSDK->GetActiveClass())
+        {
+        }
+
+        ~ActiveClassGuard()
+        {
+            if (classID != 0)
+            {
+                VWFC::VWObjects::VWClass(classID).SetThisClassAsDefault();
+            }
+        }
+
+        InternalIndex classID = 0;
+    };
+
+    std::string MemberClassDescription(const std::string& memberType)
+    {
+        if (memberType == "BOTTOM_PLATE") { return "Bottom plate"; }
+        if (memberType == "TOP_PLATE") { return "Top plate"; }
+        if (memberType == "END_STUD") { return "End stud"; }
+        if (memberType == "CORNER_STUD") { return "Corner stud"; }
+        if (memberType == "JAMB_STUD") { return "Jamb stud"; }
+        if (memberType == "TRIMMER_STUD") { return "Trimmer stud"; }
+        if (memberType == "JACK_STUD") { return "Jack stud"; }
+        if (memberType == "HEADER") { return "Header"; }
+        if (memberType == "SILL") { return "Window sill"; }
+        if (memberType == "NOGGING") { return "Nogging"; }
+        return "Stud";
+    }
+
+    InternalIndex GeneratedMemberClassID(const std::string& memberType)
+    {
+        const std::string className =
+            std::string(gSettings.generatedClassName.GetCharPtr()) + "-" +
+            MemberClassDescription(memberType);
+        const InternalIndex classID = gSDK->AddClass(className.c_str());
+        gSDK->SetClassVisibility(classID, true);
+        return classID;
+    }
+
+    const TXString& MemberPrefix(const std::string& memberType)
+    {
+        if (memberType == "END_STUD") { return gSettings.endStudPrefix; }
+        if (memberType == "CORNER_STUD") { return gSettings.cornerStudPrefix; }
+        if (memberType == "JAMB_STUD") { return gSettings.jambStudPrefix; }
+        if (memberType == "TRIMMER_STUD") { return gSettings.trimmerStudPrefix; }
+        if (memberType == "JACK_STUD") { return gSettings.jackStudPrefix; }
+        return gSettings.studPrefix;
     }
 
     std::string HandleText(MCObjectHandle object)
@@ -805,7 +864,8 @@ namespace
                                         const VWFC::Math::VWPoint2D& normal,
                                         double stationStartMm, double alongLengthMm,
                                         double centerOffsetMm, double depthMm,
-                                        double zStartMm, double zHeightMm)
+                                        double zStartMm, double zHeightMm,
+                                        const std::string& memberType)
     {
         if (alongLengthMm <= 0.0 || depthMm <= 0.0 || zHeightMm <= 0.0) { return nullptr; }
 
@@ -820,7 +880,7 @@ namespace
         VWFC::VWObjects::VWExtrudeObj member(profile, zStartMm, zHeightMm);
         MCObjectHandle handle = member;
         group.AddObject(handle);
-        gSDK->SetObjectClass(handle, GeneratedClassID());
+        gSDK->SetObjectClass(handle, GeneratedMemberClassID(memberType));
         gSDK->ResetObject(handle);
         return handle;
     }
@@ -832,7 +892,7 @@ namespace
                                         double stationStartMm, double alongLengthMm,
                                         double centerOffsetMm, double depthMm,
                                         double axisStartZMm, double axisEndZMm,
-                                        double plateHeightMm)
+                                        double plateHeightMm, const std::string& memberType)
     {
         if (alongLengthMm <= 0.0 || depthMm <= 0.0 || plateHeightMm <= 0.0) { return nullptr; }
 
@@ -857,7 +917,7 @@ namespace
             VWFC::Math::VWPoint3D(0.0, 0.0, 1.0));
         MCObjectHandle handle = member;
         group.AddObject(handle);
-        gSDK->SetObjectClass(handle, GeneratedClassID());
+        gSDK->SetObjectClass(handle, GeneratedMemberClassID(memberType));
         gSDK->ResetObject(handle);
         return handle;
     }
@@ -1003,6 +1063,7 @@ namespace
             FindWallOpenings(wallObj, wallProfile.bottomStartMm,
                              wallProfile.bottomEndMm, wallLength);
 
+        ActiveClassGuard activeClassGuard;
         VWFC::VWObjects::VWGroupObj group;
         result.group = group;
         result.frameUUID = NewUUID().c_str();
@@ -1015,7 +1076,7 @@ namespace
 
         const std::string frameName = "iQs_StudWallFrame_" + std::string(result.frameUUID.GetCharPtr());
         gSDK->SetObjectName(result.group, frameName.c_str());
-        gSDK->SetObjectClass(result.group, GeneratedClassID());
+        gSDK->SetObjectClass(result.group, GeneratedFrameGroupClassID());
 
         std::map<std::string, size_t> memberNameCounters;
         auto nextMemberName = [&](const TXString& prefix) {
@@ -1036,7 +1097,8 @@ namespace
                              const TXString& profileDimBSemantic) {
             MCObjectHandle memberHandle =
                 AddRectangularMember(group, start, along, normal, stationStart, alongLength,
-                                     component.centerOffsetMm, geometryDepth, zStart, zHeight);
+                                     component.centerOffsetMm, geometryDepth, zStart, zHeight,
+                                     type);
             if (!memberHandle)
             {
                 return;
@@ -1052,9 +1114,8 @@ namespace
         };
 
         auto addSlopedPlate = [&](const std::string& id, const std::string& type,
+                                  double stationStart, double stationEnd,
                                   double axisStartZ, double axisEndZ) {
-            const double stationStart = plateExtents.startStationMm;
-            const double stationEnd = plateExtents.endStationMm;
             const double alongLength = stationEnd - stationStart;
             if (alongLength <= 0.0) { return; }
             const double trimmedAxisStartZ =
@@ -1081,7 +1142,7 @@ namespace
                                      component.centerOffsetMm, gSettings.plateWidthMm,
                                      Interpolate(axisStartZ, axisEndZ, grossStationStart, wallLength),
                                      Interpolate(axisStartZ, axisEndZ, grossStationEnd, wallLength),
-                                     kPlateHeightMm);
+                                     kPlateHeightMm, type);
             if (!memberHandle) { return; }
 
             FrameMember member{ id, type, grossLength, kPlateHeightMm, gSettings.plateWidthMm,
@@ -1096,14 +1157,73 @@ namespace
         for (size_t i = 0; i < kBottomPlateCount; ++i)
         {
             const double offset = (static_cast<double>(i) + 0.5) * kPlateHeightMm;
-            addSlopedPlate(nextMemberName(gSettings.bottomPlatePrefix), "BOTTOM_PLATE",
-                           wallProfile.bottomStartMm + offset,
-                           wallProfile.bottomEndMm + offset);
+            std::vector<std::pair<double, double>> excludedIntervals;
+            for (const WallOpening& opening : openings)
+            {
+                const double plateBottom =
+                    Interpolate(wallProfile.bottomStartMm, wallProfile.bottomEndMm,
+                                opening.stationMm, wallLength) +
+                    static_cast<double>(i) * kPlateHeightMm;
+                const double plateTop = plateBottom + kPlateHeightMm;
+                if (opening.bottomMm >= plateTop - 0.001 ||
+                    opening.topMm <= plateBottom + 0.001)
+                {
+                    continue;
+                }
+
+                const double openingLeft =
+                    std::max(plateExtents.startStationMm,
+                             opening.stationMm - opening.widthMm / 2.0);
+                const double openingRight =
+                    std::min(plateExtents.endStationMm,
+                             opening.stationMm + opening.widthMm / 2.0);
+                if (openingRight > openingLeft + 0.001)
+                {
+                    excludedIntervals.emplace_back(openingLeft, openingRight);
+                }
+            }
+
+            std::sort(excludedIntervals.begin(), excludedIntervals.end());
+            std::vector<std::pair<double, double>> mergedExcludedIntervals;
+            for (const auto& interval : excludedIntervals)
+            {
+                if (mergedExcludedIntervals.empty() ||
+                    interval.first > mergedExcludedIntervals.back().second + 0.001)
+                {
+                    mergedExcludedIntervals.push_back(interval);
+                }
+                else
+                {
+                    mergedExcludedIntervals.back().second =
+                        std::max(mergedExcludedIntervals.back().second, interval.second);
+                }
+            }
+
+            double segmentStart = plateExtents.startStationMm;
+            for (const auto& interval : mergedExcludedIntervals)
+            {
+                if (interval.first > segmentStart + 0.001)
+                {
+                    addSlopedPlate(nextMemberName(gSettings.bottomPlatePrefix), "BOTTOM_PLATE",
+                                   segmentStart, interval.first,
+                                   wallProfile.bottomStartMm + offset,
+                                   wallProfile.bottomEndMm + offset);
+                }
+                segmentStart = std::max(segmentStart, interval.second);
+            }
+            if (plateExtents.endStationMm > segmentStart + 0.001)
+            {
+                addSlopedPlate(nextMemberName(gSettings.bottomPlatePrefix), "BOTTOM_PLATE",
+                               segmentStart, plateExtents.endStationMm,
+                               wallProfile.bottomStartMm + offset,
+                               wallProfile.bottomEndMm + offset);
+            }
         }
         for (size_t i = 0; i < kTopPlateCount; ++i)
         {
             const double offset = (static_cast<double>(i) + 0.5) * kPlateHeightMm;
             addSlopedPlate(nextMemberName(gSettings.topPlatePrefix), "TOP_PLATE",
+                           plateExtents.startStationMm, plateExtents.endStationMm,
                            wallProfile.topStartMm - offset, wallProfile.topEndMm - offset);
         }
 
@@ -1231,15 +1351,15 @@ namespace
                                openingRight + (static_cast<double>(i) + 0.5) * kStudWidthMm,
                                opening.topMm, 0.0);
             }
-            for (Sint32 i = 0; i < gSettings.kingStudCount; ++i)
+            for (Sint32 i = 0; i < gSettings.jambStudCount; ++i)
             {
                 const double jambOffset =
                     (static_cast<double>(gSettings.trimmerStudCount + i) + 0.5) * kStudWidthMm;
-                addOpeningStud("KING_STUD",
+                addOpeningStud("JAMB_STUD",
                                openingLeft - jambOffset - kStudWidthMm / 2.0,
                                openingLeft - jambOffset,
                                std::numeric_limits<double>::max(), topSlope);
-                addOpeningStud("KING_STUD",
+                addOpeningStud("JAMB_STUD",
                                openingRight + jambOffset - kStudWidthMm / 2.0,
                                openingRight + jambOffset,
                                std::numeric_limits<double>::max(), topSlope);
@@ -1267,45 +1387,73 @@ namespace
                           "Width", "Length", "Height");
             }
 
-            const double upperCrippleBottom = opening.topMm + kHeaderHeightMm;
-            for (double station : stations)
-            {
-                if (station <= openingLeft || station >= openingRight) { continue; }
-                const double upperCrippleTop =
-                    Interpolate(wallProfile.topStartMm, wallProfile.topEndMm,
-                                station, wallLength) -
-                    static_cast<double>(kTopPlateCount) * kPlateHeightMm;
-                if (upperCrippleTop > upperCrippleBottom)
-                {
-                    const double height = upperCrippleTop - upperCrippleBottom;
-                    addMember(nextMemberName(gSettings.studPrefix), "CRIPPLE_STUD_ABOVE",
-                              station - kStudWidthMm / 2.0, kStudWidthMm,
-                              upperCrippleBottom,
-                              GrossVerticalLength(height, kStudWidthMm, 0.0, topSlope),
-                              gSettings.studDepthMm,
-                              station,
-                              GrossVerticalLength(height, kStudWidthMm, 0.0, topSlope),
-                              kStudWidthMm, gSettings.studDepthMm,
-                              "Length", "Width", "Height");
-                }
-                const double lowerCrippleBottom =
+            const double upperJackBottom = opening.topMm + kHeaderHeightMm;
+            const double lowerJackTop = opening.bottomMm - gSettings.sillHeightMm;
+            std::vector<double> lowerJackStations;
+            auto addLowerJack = [&](double station) {
+                const bool overlapsExisting =
+                    std::any_of(lowerJackStations.begin(), lowerJackStations.end(),
+                                [&](double existingStation) {
+                                    return std::abs(existingStation - station) <
+                                           kStudWidthMm - 0.001;
+                                });
+                if (overlapsExisting) { return; }
+
+                const double localLowerJackBottom =
                     Interpolate(wallProfile.bottomStartMm, wallProfile.bottomEndMm,
                                 station, wallLength) +
                     static_cast<double>(kBottomPlateCount) * kPlateHeightMm;
-                const double lowerCrippleTop = opening.bottomMm - gSettings.sillHeightMm;
-                if (lowerCrippleTop > lowerCrippleBottom)
+                if (lowerJackTop <= localLowerJackBottom) { return; }
+
+                const double height = lowerJackTop - localLowerJackBottom;
+                addMember(nextMemberName(MemberPrefix("JACK_STUD")), "JACK_STUD",
+                          station - kStudWidthMm / 2.0, kStudWidthMm,
+                          GrossVerticalBottom(localLowerJackBottom, kStudWidthMm, bottomSlope),
+                          GrossVerticalLength(height, kStudWidthMm, bottomSlope, 0.0),
+                          gSettings.studDepthMm,
+                          station,
+                          GrossVerticalLength(height, kStudWidthMm, bottomSlope, 0.0),
+                          kStudWidthMm, gSettings.studDepthMm,
+                          "Length", "Width", "Height");
+                lowerJackStations.push_back(station);
+            };
+
+            std::vector<double> jackStations;
+            for (double station : stations)
+            {
+                if (station <= openingLeft || station >= openingRight)
                 {
-                    const double height = lowerCrippleTop - lowerCrippleBottom;
-                    addMember(nextMemberName(gSettings.studPrefix), "CRIPPLE_STUD_BELOW",
-                              station - kStudWidthMm / 2.0, kStudWidthMm,
-                              GrossVerticalBottom(lowerCrippleBottom, kStudWidthMm, bottomSlope),
-                              GrossVerticalLength(height, kStudWidthMm, bottomSlope, 0.0),
+                    continue;
+                }
+                const double adjustedStation =
+                    std::max(openingLeft + kStudWidthMm / 2.0,
+                             std::min(station, openingRight - kStudWidthMm / 2.0));
+                const bool duplicatesJack =
+                    std::any_of(jackStations.begin(), jackStations.end(),
+                                [&](double existingStation) {
+                                    return std::abs(existingStation - adjustedStation) < 0.001;
+                                });
+                if (duplicatesJack) { continue; }
+                jackStations.push_back(adjustedStation);
+
+                const double upperJackTop =
+                    Interpolate(wallProfile.topStartMm, wallProfile.topEndMm,
+                                adjustedStation, wallLength) -
+                    static_cast<double>(kTopPlateCount) * kPlateHeightMm;
+                if (upperJackTop > upperJackBottom)
+                {
+                    const double height = upperJackTop - upperJackBottom;
+                    addMember(nextMemberName(MemberPrefix("JACK_STUD")), "JACK_STUD",
+                              adjustedStation - kStudWidthMm / 2.0, kStudWidthMm,
+                              upperJackBottom,
+                              GrossVerticalLength(height, kStudWidthMm, 0.0, topSlope),
                               gSettings.studDepthMm,
-                              station,
-                              GrossVerticalLength(height, kStudWidthMm, bottomSlope, 0.0),
+                              adjustedStation,
+                              GrossVerticalLength(height, kStudWidthMm, 0.0, topSlope),
                               kStudWidthMm, gSettings.studDepthMm,
                               "Length", "Width", "Height");
                 }
+                addLowerJack(adjustedStation);
             }
         }
 
@@ -1332,7 +1480,7 @@ namespace
             if (gSettings.resolveStudOverlaps && overlapsAccepted) { continue; }
 
             acceptedVerticalMembers.push_back(candidate);
-            addMember(nextMemberName(gSettings.studPrefix), candidate.type,
+            addMember(nextMemberName(MemberPrefix(candidate.type)), candidate.type,
                       candidate.stationMm - kStudWidthMm / 2.0, kStudWidthMm,
                       candidate.zStartMm, candidate.zHeightMm, gSettings.studDepthMm,
                       candidate.stationMm,
@@ -1347,6 +1495,7 @@ namespace
             double right = 0.0;
             double bottom = 0.0;
             double top = 0.0;
+            bool containsCornerStud = false;
         };
 
         std::vector<VerticalEdge> verticalEdges;
@@ -1355,7 +1504,8 @@ namespace
             if (member.type.find("STUD") == std::string::npos) { continue; }
             verticalEdges.push_back({ member.stationMm - member.widthMm / 2.0,
                                       member.stationMm + member.widthMm / 2.0,
-                                      member.zStartMm, member.zEndMm });
+                                      member.zStartMm, member.zEndMm,
+                                      member.type == "CORNER_STUD" });
         }
         std::sort(verticalEdges.begin(), verticalEdges.end(),
                   [](const VerticalEdge& lhs, const VerticalEdge& rhs) {
@@ -1372,17 +1522,33 @@ namespace
             else
             {
                 mergedEdges.back().right = std::max(mergedEdges.back().right, edge.right);
-                mergedEdges.back().bottom = std::max(mergedEdges.back().bottom, edge.bottom);
-                mergedEdges.back().top = std::min(mergedEdges.back().top, edge.top);
+                mergedEdges.back().bottom = std::min(mergedEdges.back().bottom, edge.bottom);
+                mergedEdges.back().top = std::max(mergedEdges.back().top, edge.top);
+                mergedEdges.back().containsCornerStud =
+                    mergedEdges.back().containsCornerStud || edge.containsCornerStud;
             }
         }
 
-        const double highestFrameHeight =
+        auto supportsNogging = [&](const VerticalEdge& pack, double bottom, double top) {
+            return std::any_of(verticalEdges.begin(), verticalEdges.end(),
+                               [&](const VerticalEdge& edge) {
+                                   const bool belongsToPack =
+                                       edge.left < pack.right + 0.001 &&
+                                       edge.right > pack.left - 0.001;
+                                   return belongsToPack &&
+                                          edge.bottom <= bottom + 0.001 &&
+                                          edge.top >= top - 0.001;
+                               });
+        };
+
+        const double highestStudHeight =
             std::max(wallProfile.topStartMm - wallProfile.bottomStartMm,
-                     wallProfile.topEndMm - wallProfile.bottomEndMm);
+                     wallProfile.topEndMm - wallProfile.bottomEndMm) -
+            static_cast<double>(kBottomPlateCount + kTopPlateCount) * kPlateHeightMm;
         const size_t noggingRowCount =
-            gSettings.generateNoggings
-                ? static_cast<size_t>(std::floor(highestFrameHeight / kNoggingCentresMm))
+            gSettings.generateNoggings && highestStudHeight > 0.0
+                ? static_cast<size_t>(
+                      std::max(0.0, std::ceil(highestStudHeight / kNoggingCentresMm) - 1.0))
                 : 0;
         for (size_t row = 1; row <= noggingRowCount; ++row)
         {
@@ -1392,18 +1558,32 @@ namespace
                 const double gapStart = mergedEdges[i - 1].right;
                 const double gapEnd = mergedEdges[i].left;
                 const double gapLength = gapEnd - gapStart;
-                if (gapLength <= 0.001) { continue; }
+                const bool cornerClusterGap =
+                    mergedEdges[i - 1].containsCornerStud || mergedEdges[i].containsCornerStud;
+                if (gapLength <= 0.001 ||
+                    (!cornerClusterGap && gapLength <= kStudWidthMm + 0.001))
+                {
+                    continue;
+                }
 
-                const double noggingCentreZ =
+                const double gapStation = (gapStart + gapEnd) / 2.0;
+                const double studBottom =
                     Interpolate(wallProfile.bottomStartMm, wallProfile.bottomEndMm,
-                                (gapStart + gapEnd) / 2.0, wallLength) +
-                    static_cast<double>(row) * kNoggingCentresMm;
+                                gapStation, wallLength) +
+                    static_cast<double>(kBottomPlateCount) * kPlateHeightMm;
+                const double studTop =
+                    Interpolate(wallProfile.topStartMm, wallProfile.topEndMm,
+                                gapStation, wallLength) -
+                    static_cast<double>(kTopPlateCount) * kPlateHeightMm;
+                const double noggingCentreZ =
+                    studBottom + (studTop - studBottom) * static_cast<double>(row) /
+                                      static_cast<double>(noggingRowCount + 1);
                 const double noggingZ =
                     noggingIndex % 2 == 0 ? noggingCentreZ - gSettings.noggingStaggerMm
                                          : noggingCentreZ;
                 const double noggingTop = noggingZ + kNoggingHeightMm;
-                if (noggingZ < std::max(mergedEdges[i - 1].bottom, mergedEdges[i].bottom) ||
-                    noggingTop > std::min(mergedEdges[i - 1].top, mergedEdges[i].top))
+                if (!supportsNogging(mergedEdges[i - 1], noggingZ, noggingTop) ||
+                    !supportsNogging(mergedEdges[i], noggingZ, noggingTop))
                 {
                     continue;
                 }
@@ -1748,11 +1928,16 @@ namespace
         settings.noggingStaggerMm = std::max(0.0, settings.noggingStaggerMm);
         settings.bottomPlateCount = std::max<Sint32>(0, settings.bottomPlateCount);
         settings.topPlateCount = std::max<Sint32>(0, settings.topPlateCount);
-        settings.kingStudCount = std::max<Sint32>(0, settings.kingStudCount);
+        settings.jambStudCount = std::max<Sint32>(0, settings.jambStudCount);
         settings.trimmerStudCount = std::max<Sint32>(1, settings.trimmerStudCount);
         if (settings.bottomPlatePrefix.IsEmpty()) { settings.bottomPlatePrefix = "BP"; }
         if (settings.topPlatePrefix.IsEmpty()) { settings.topPlatePrefix = "TP"; }
         if (settings.studPrefix.IsEmpty()) { settings.studPrefix = "S"; }
+        if (settings.endStudPrefix.IsEmpty()) { settings.endStudPrefix = "ES"; }
+        if (settings.cornerStudPrefix.IsEmpty()) { settings.cornerStudPrefix = "CS"; }
+        if (settings.jambStudPrefix.IsEmpty()) { settings.jambStudPrefix = "JAM"; }
+        if (settings.trimmerStudPrefix.IsEmpty()) { settings.trimmerStudPrefix = "TR"; }
+        if (settings.jackStudPrefix.IsEmpty()) { settings.jackStudPrefix = "JS"; }
         if (settings.noggingPrefix.IsEmpty()) { settings.noggingPrefix = "NOG"; }
         if (settings.windowSillPrefix.IsEmpty()) { settings.windowSillPrefix = "WS"; }
         if (settings.lintelPrefix.IsEmpty()) { settings.lintelPrefix = "LIN"; }
@@ -1773,7 +1958,7 @@ namespace
               fHeaderHeightLabel(130), fHeaderHeightEdit(131),
               fHeaderWidthLabel(132), fHeaderWidthEdit(133),
               fDetectDoors(140), fDetectWindows(141),
-              fKingStudCountLabel(142), fKingStudCountEdit(143),
+              fJambStudCountLabel(142), fJambStudCountEdit(143),
               fTrimmerStudCountLabel(144), fTrimmerStudCountEdit(145),
               fGenerateNoggings(150), fNoggingHeightLabel(151), fNoggingHeightEdit(152),
               fNoggingCentresLabel(153), fNoggingCentresEdit(154),
@@ -1782,6 +1967,11 @@ namespace
               fBottomPlatePrefixLabel(162), fBottomPlatePrefixEdit(163),
               fTopPlatePrefixLabel(164), fTopPlatePrefixEdit(165),
               fStudPrefixLabel(166), fStudPrefixEdit(167),
+              fEndStudPrefixLabel(185), fEndStudPrefixEdit(186),
+              fCornerStudPrefixLabel(187), fCornerStudPrefixEdit(188),
+              fJambStudPrefixLabel(189), fJambStudPrefixEdit(190),
+              fTrimmerStudPrefixLabel(191), fTrimmerStudPrefixEdit(192),
+              fJackStudPrefixLabel(193), fJackStudPrefixEdit(194),
               fNoggingPrefixLabel(168), fNoggingPrefixEdit(169),
               fWindowSillPrefixLabel(170), fWindowSillPrefixEdit(171),
               fLintelPrefixLabel(172), fLintelPrefixEdit(173),
@@ -1860,8 +2050,8 @@ namespace
 
             if (!fDetectDoors.CreateControl(this, "Frame door openings") ||
                 !fDetectWindows.CreateControl(this, "Frame window openings") ||
-                !fKingStudCountLabel.CreateControl(this, "King studs per jamb:", 28) ||
-                !fKingStudCountEdit.CreateControl(this, fSettings.kingStudCount, 14) ||
+                !fJambStudCountLabel.CreateControl(this, "Jamb studs per opening side:", 28) ||
+                !fJambStudCountEdit.CreateControl(this, fSettings.jambStudCount, 14) ||
                 !fTrimmerStudCountLabel.CreateControl(this, "Trimmer studs per jamb:", 28) ||
                 !fTrimmerStudCountEdit.CreateControl(this, fSettings.trimmerStudCount, 14) ||
                 !fGenerateNoggings.CreateControl(this, "Generate noggings") ||
@@ -1881,6 +2071,16 @@ namespace
                 !fTopPlatePrefixEdit.CreateControl(this, fSettings.topPlatePrefix, 12) ||
                 !fStudPrefixLabel.CreateControl(this, "Stud prefix:", 22) ||
                 !fStudPrefixEdit.CreateControl(this, fSettings.studPrefix, 12) ||
+                !fEndStudPrefixLabel.CreateControl(this, "End stud prefix:", 22) ||
+                !fEndStudPrefixEdit.CreateControl(this, fSettings.endStudPrefix, 12) ||
+                !fCornerStudPrefixLabel.CreateControl(this, "Corner stud prefix:", 22) ||
+                !fCornerStudPrefixEdit.CreateControl(this, fSettings.cornerStudPrefix, 12) ||
+                !fJambStudPrefixLabel.CreateControl(this, "Jamb stud prefix:", 22) ||
+                !fJambStudPrefixEdit.CreateControl(this, fSettings.jambStudPrefix, 12) ||
+                !fTrimmerStudPrefixLabel.CreateControl(this, "Trimmer stud prefix:", 22) ||
+                !fTrimmerStudPrefixEdit.CreateControl(this, fSettings.trimmerStudPrefix, 12) ||
+                !fJackStudPrefixLabel.CreateControl(this, "Jack stud prefix:", 22) ||
+                !fJackStudPrefixEdit.CreateControl(this, fSettings.jackStudPrefix, 12) ||
                 !fNoggingPrefixLabel.CreateControl(this, "Nogging prefix:", 22) ||
                 !fNoggingPrefixEdit.CreateControl(this, fSettings.noggingPrefix, 12) ||
                 !fWindowSillPrefixLabel.CreateControl(this, "Window sill prefix:", 22) ||
@@ -1920,9 +2120,9 @@ namespace
 
             fOpeningsPane.AddFirstGroupControl(&fDetectDoors);
             this->AddBelowControl(&fDetectDoors, &fDetectWindows);
-            this->AddBelowControl(&fDetectWindows, &fKingStudCountLabel);
-            this->AddRightControl(&fKingStudCountLabel, &fKingStudCountEdit);
-            AddLabelledControl(fTrimmerStudCountLabel, fTrimmerStudCountEdit, &fKingStudCountLabel);
+            this->AddBelowControl(&fDetectWindows, &fJambStudCountLabel);
+            this->AddRightControl(&fJambStudCountLabel, &fJambStudCountEdit);
+            AddLabelledControl(fTrimmerStudCountLabel, fTrimmerStudCountEdit, &fJambStudCountLabel);
 
             fNoggingsPane.AddFirstGroupControl(&fGenerateNoggings);
             this->AddBelowControl(&fGenerateNoggings, &fNoggingCentresLabel);
@@ -1935,7 +2135,12 @@ namespace
             this->AddRightControl(&fBottomPlatePrefixLabel, &fBottomPlatePrefixEdit);
             AddLabelledControl(fTopPlatePrefixLabel, fTopPlatePrefixEdit, &fBottomPlatePrefixLabel);
             AddLabelledControl(fStudPrefixLabel, fStudPrefixEdit, &fTopPlatePrefixLabel);
-            AddLabelledControl(fNoggingPrefixLabel, fNoggingPrefixEdit, &fStudPrefixLabel);
+            AddLabelledControl(fEndStudPrefixLabel, fEndStudPrefixEdit, &fStudPrefixLabel);
+            AddLabelledControl(fCornerStudPrefixLabel, fCornerStudPrefixEdit, &fEndStudPrefixLabel);
+            AddLabelledControl(fJambStudPrefixLabel, fJambStudPrefixEdit, &fCornerStudPrefixLabel);
+            AddLabelledControl(fTrimmerStudPrefixLabel, fTrimmerStudPrefixEdit, &fJambStudPrefixLabel);
+            AddLabelledControl(fJackStudPrefixLabel, fJackStudPrefixEdit, &fTrimmerStudPrefixLabel);
+            AddLabelledControl(fNoggingPrefixLabel, fNoggingPrefixEdit, &fJackStudPrefixLabel);
             AddLabelledControl(fWindowSillPrefixLabel, fWindowSillPrefixEdit, &fNoggingPrefixLabel);
             AddLabelledControl(fLintelPrefixLabel, fLintelPrefixEdit, &fWindowSillPrefixLabel);
             AddLabelledControl(fDoorHeadPrefixLabel, fDoorHeadPrefixEdit, &fLintelPrefixLabel);
@@ -1957,7 +2162,7 @@ namespace
             this->AddDDX_EditReal(133, &fSettings.headerWidthMm, VWEditRealCtrl::kEditControlDimension);
             this->AddDDX_CheckButton(140, &fSettings.detectDoors);
             this->AddDDX_CheckButton(141, &fSettings.detectWindows);
-            this->AddDDX_EditInteger(143, &fSettings.kingStudCount);
+            this->AddDDX_EditInteger(143, &fSettings.jambStudCount);
             this->AddDDX_EditInteger(145, &fSettings.trimmerStudCount);
             this->AddDDX_CheckButton(150, &fSettings.generateNoggings);
             this->AddDDX_EditReal(152, &fSettings.noggingHeightMm, VWEditRealCtrl::kEditControlDimension);
@@ -1971,6 +2176,11 @@ namespace
             this->AddDDX_EditText(163, &fSettings.bottomPlatePrefix);
             this->AddDDX_EditText(165, &fSettings.topPlatePrefix);
             this->AddDDX_EditText(167, &fSettings.studPrefix);
+            this->AddDDX_EditText(186, &fSettings.endStudPrefix);
+            this->AddDDX_EditText(188, &fSettings.cornerStudPrefix);
+            this->AddDDX_EditText(190, &fSettings.jambStudPrefix);
+            this->AddDDX_EditText(192, &fSettings.trimmerStudPrefix);
+            this->AddDDX_EditText(194, &fSettings.jackStudPrefix);
             this->AddDDX_EditText(169, &fSettings.noggingPrefix);
             this->AddDDX_EditText(171, &fSettings.windowSillPrefix);
             this->AddDDX_EditText(173, &fSettings.lintelPrefix);
@@ -2021,8 +2231,8 @@ namespace
         VWEditRealCtrl fHeaderWidthEdit;
         VWCheckButtonCtrl fDetectDoors;
         VWCheckButtonCtrl fDetectWindows;
-        VWStaticTextCtrl fKingStudCountLabel;
-        VWEditIntegerCtrl fKingStudCountEdit;
+        VWStaticTextCtrl fJambStudCountLabel;
+        VWEditIntegerCtrl fJambStudCountEdit;
         VWStaticTextCtrl fTrimmerStudCountLabel;
         VWEditIntegerCtrl fTrimmerStudCountEdit;
         VWCheckButtonCtrl fGenerateNoggings;
@@ -2040,6 +2250,16 @@ namespace
         VWEditTextCtrl fTopPlatePrefixEdit;
         VWStaticTextCtrl fStudPrefixLabel;
         VWEditTextCtrl fStudPrefixEdit;
+        VWStaticTextCtrl fEndStudPrefixLabel;
+        VWEditTextCtrl fEndStudPrefixEdit;
+        VWStaticTextCtrl fCornerStudPrefixLabel;
+        VWEditTextCtrl fCornerStudPrefixEdit;
+        VWStaticTextCtrl fJambStudPrefixLabel;
+        VWEditTextCtrl fJambStudPrefixEdit;
+        VWStaticTextCtrl fTrimmerStudPrefixLabel;
+        VWEditTextCtrl fTrimmerStudPrefixEdit;
+        VWStaticTextCtrl fJackStudPrefixLabel;
+        VWEditTextCtrl fJackStudPrefixEdit;
         VWStaticTextCtrl fNoggingPrefixLabel;
         VWEditTextCtrl fNoggingPrefixEdit;
         VWStaticTextCtrl fWindowSillPrefixLabel;

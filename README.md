@@ -13,24 +13,32 @@ walls and writes development probe JSON files to `probe-output/`.
 The current generator milestone also creates one prototype `iQs_StudWallFrame`
 group per selected straight wall. Each group contains:
 
-- one bottom plate
+- configurable bottom-plate layers, one by default
 - two top plates
+- bottom-plate layers split around door thresholds and low window sills that intersect them
 - regular `45 mm` studs at `450 mm` centres, including end studs
 - opening-aware jamb and trimmer studs for inserted doors and windows
 - tagged extrude headers over inserted doors and windows
 - tagged extrude sill members under inserted windows
-- cripple studs above headers and below raised sills/openings
-- opening-aware nogging rows fitted between vertical members at 1350 mm centres, staggered by 45 mm
+- jack studs above headers and below raised sills/openings
+- opening-aware nogging rows fitted between vertical members from the clear stud
+  zone at 1350 mm centres, staggered by 45 mm
+- short noggings retained inside intentional corner-stud clusters to represent
+  solid blocking
 - linear start-to-end top and bottom wall rakes, with sloped plates and locally sized studs
 - gross long-point stock lengths for raked members before bevel cuts, reflected in both geometry and export records
 - component-centreline plate joins for selected endpoint-connected wall chains
 - lining-fixing corner studs on through walls, inset by the joined framing-component depth
-- overlap resolution for vertical framing: end studs, opening studs, trimmers, kings, corner studs, then regular studs
-- incrementing member names: `BP`, `TP`, `S`, `NOG`, `WS`, `LIN` and `DH`
+- overlap resolution for vertical framing: end studs, opening studs, trimmers,
+  jamb studs, corner studs, then regular studs
+- configurable incrementing member names: `BP`, `TP`, `S`, `ES`, `CS`, `JAM`,
+  `TR`, `JS`, `NOG`, `WS`, `LIN` and `DH`
 
-Generated frame groups and child members are assigned to the
-`iQs-Wall Framing` class. A later settings modal will allow the user to choose a
-different framing class and wall component.
+Generated frame groups are assigned to the `Wall-Timber Frame-Frame group`
+class. Child members are assigned to descriptive sibling classes, such as
+`Wall-Timber Frame-Bottom plate` and `Wall-Timber Frame-Top plate`, so each member
+type can carry a distinct installation cost. A later settings modal will allow
+the user to choose a different framing class and wall component.
 
 The prototype requires a wall component named exactly `Timber Frame`. Its depth
 and centreline define the generated framing position. If that component is not
@@ -61,9 +69,16 @@ host wall, reports stale duplicates, and creates one canonical replacement.
 - support multiple lintels over an opening
 - support explicit lintel offsets for the less common cases where a lintel sits
   outside the wall framing envelope
-- calculate nogging rows from the available stud height rather than the overall
-  wall height, and remove occasional spare noggings near wall ends below the
-  top plate
+- optionally add a window/door ledger beneath lintels over `120 mm` high. The
+  ledger is generally stud-sized, installed length-long by height-short, with
+  its underside governed by the window or door head height. Lintel support
+  detailing for above-opening jack studs should consider the total lintel
+  depth: where it is less than half the stud width, run the jack from the
+  underside of the top plate down to the lintel underside; where it is at least
+  half the stud width, including built-up lintels such as `2 x 32 mm = 64 mm`,
+  terminate the jack at the lintel top.
+- assign colours by generated framing class
+- allow materials to be allocated to framing members
 
 V0.1 accepts straight walls with linear start-to-end top and bottom heights.
 Walls with intermediate peak breaks, including complex fitted profiles, are

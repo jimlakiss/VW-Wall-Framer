@@ -9,7 +9,7 @@
 
 ## 1. The idea in one sentence
 
-Build an iQs wall-framing generator that reads a selected Vectorworks Wall PIO, derives the wall run, height, openings and selected stud-framing component, then generates plates, studs, noggings/blocking, jamb/trimmer/king studs, lintel/header framing and optional extra members as independent iQs framing objects or sub-objects, with stored quantities and cost-plan data.
+Build an iQs wall-framing generator that reads a selected Vectorworks Wall PIO, derives the wall run, height, openings and selected stud-framing component, then generates plates, studs, noggings/blocking, jamb/trimmer studs, lintel/header framing and optional extra members as independent iQs framing objects or sub-objects, with stored quantities and cost-plan data.
 
 This is not trying to make the native Vectorworks framing command better. It is a separate QS/detailing-first framing system that uses the Wall PIO as the host/reference geometry.
 
@@ -199,7 +199,7 @@ AU_STEEL_64_600,AU Steel Stud 64 @ 600,NASH,35,64,600,35,64,1,1,0,,0,single_end,
 `opening_rules.csv`
 
 ```csv
-opening_rule_code,king_studs_each_side,jack_studs_each_side,header_member_count,sill_member_count,cripple_above_spacing_mm,cripple_below_spacing_mm,extra_stud_at_wall_ends
+opening_rule_code,jamb_studs_each_side,jack_studs_each_side,header_member_count,sill_member_count,jack_above_spacing_mm,jack_below_spacing_mm,extra_stud_at_wall_ends
 STD_OPENING_TIMBER,1,1,1,1,450,450,true
 HEAVY_OPENING_TIMBER,2,2,2,1,450,450,true
 STD_OPENING_STEEL,1,1,1,1,600,600,true
@@ -246,11 +246,11 @@ The generator dialog should have four tabs.
 - detect doors
 - detect windows
 - detect all wall inserts
-- king studs each side
+- jamb studs each side
 - jack/trimmer studs each side
 - header/lintel member count
 - sill member under windows
-- cripple stud spacing above/below openings
+- jack stud spacing above/below openings
 - ignore openings below minimum width
 
 ### 7.4 Output tab
@@ -335,7 +335,7 @@ Mandatory v1 quantities:
 - plate lineal metres
 - nogging/blocking count and lineal metres
 - header/lintel count and lineal metres
-- jamb/king/trimmer stud count and lineal metres
+- jamb/trimmer stud count and lineal metres
 - total timber/steel lineal metres by size/grade
 - total member count
 - total volume by size/grade
@@ -461,11 +461,11 @@ The tool must never rely on manual deletion by the user.
 For each opening:
 
 1. Remove regular studs that clash with clear opening span.
-2. Add king studs each side.
+2. Add jamb studs each side.
 3. Add jack/trimmer studs each side.
 4. Add header/lintel over opening.
 5. Add sill member under window if applicable.
-6. Add cripple studs above header and/or below sill at spacing rule.
+6. Add jack studs above header and/or below sill at spacing rule.
 
 ### 12.4 Plates
 
@@ -541,7 +541,20 @@ For v1, generate member solids inside the `iQs_StudWallFrame` PIO.
 Implementation options:
 
 - create rectangular prism/extrude from local coordinates;
-- assign class/material per member type;
+- assign class/material per member type using descriptive child classes such as
+  `Wall-Timber Frame-Bottom plate` and `Wall-Timber Frame-Top plate`, rather than
+  abbreviations, so installation costs can differ by member type; implemented
+  in the current prototype;
+- assign colours by generated framing class;
+- allow materials to be allocated to framing members;
+- optionally add a window/door ledger beneath lintels over `120 mm` high. The
+  ledger is generally stud-sized, installed length-long by height-short, with
+  its underside governed by the window or door head height. Lintel support
+  detailing for above-opening jack studs should use total lintel depth: run the
+  jack from the underside of the top plate down to the lintel underside when
+  the lintel is less than half the stud width, but terminate it at the lintel
+  top when the total depth is at least half the stud width, including built-up
+  lintels such as `2 x 32 mm = 64 mm`;
 - store member metadata in a JSON blob/record field on the parent PIO;
 - optionally create lightweight 2D elevation lines/rectangles for documentation.
 
@@ -615,6 +628,7 @@ Keep these out of v1 unless they become unavoidable:
 - visible members
 - schedule/export
 - manual refresh
+- Set lintel size to 90x45 as default; that is 90mm wide and 45 high. This could be a standard feature as a 'header' with the lintel an optional extra...
 
 ### v1.1 — Better documentation
 
