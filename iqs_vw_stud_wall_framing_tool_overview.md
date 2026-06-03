@@ -407,6 +407,75 @@ Minimum JSON per frame object:
 }
 ```
 
+### 10.1 BOQ element navigation
+
+Every extracted quantity element should carry enough stable reference data for
+the iQs BOQ UI to locate the source object in Vectorworks or a Vectorworks
+viewer. This is required for rapid QA checks and for long-term client review,
+where the issued iQs HTML BOQ should be usable as the source of truth while the
+model remains the visual reference.
+
+This applies to all extracted elements, not just warnings or duplicate cases.
+Each quantity row should include:
+
+- exported element ID / row ID
+- source Vectorworks object UUID
+- host UUID, where applicable
+- duplicate group ID or warning IDs, where applicable
+- source file/model reference
+- class, layer, object type and semantic quantity type
+- world-space bounding box and/or camera target point
+
+The BOQ UI should expose a click-to-show action for any row or warning. That
+action should request that Vectorworks, or the Vectorworks viewer when working
+from an issued HTML BOQ, select/highlight and zoom to the relevant source
+element.
+
+This requires two-way communication between the BOQ UI and the Vectorworks
+exporter/runtime:
+
+- VW to BOQ: export object UUIDs, host UUIDs, element IDs and geometry targets
+  with each quantity row.
+- BOQ to VW/viewer: send a `show_object`, `show_element` or
+  `show_duplicate_group` command keyed by exported element ID, object UUID or
+  duplicate group ID.
+- VW/viewer response: select/highlight and zoom to the object/group if it still
+  exists, or return a clear stale-reference result if the model has changed since
+  export.
+
+### 10.2 Exporter duplicate-in-place lint
+
+Duplicate-in-place detection should live in the shared iQs exporter rather than
+inside the wall framer. The framer can avoid creating stale duplicate frame
+groups during regeneration, but only the exporter sees the final quantity-bearing
+objects that will reach the BOQ.
+
+The exporter should build a duplicate fingerprint for every exportable iQs object
+using rounded/toleranced geometry and quantity fields:
+
+- export record/schema/type
+- object UUID and host UUID, where available
+- class, material, rate code and member semantic type
+- world-space bounding box: `min_x`, `min_y`, `min_z`, `max_x`, `max_y`, `max_z`
+- measured length, width, height, volume and orientation/axis fingerprint
+
+Objects with the same physical/quantity fingerprint but different object UUIDs
+should be reported as potential duplicate quantities. The check should use a
+small model-unit tolerance rather than raw floating point equality.
+
+If duplicates are found, the exporter should:
+
+- block or strongly warn before export completion;
+- include duplicate groups in the export payload for auditability;
+- preserve the affected Vectorworks object UUIDs/handles in the payload;
+- select/highlight affected objects in Vectorworks when the user chooses to
+  inspect them.
+
+The iQs BOQ UI should surface these duplicate groups as quality warnings on the
+affected rows. If a warning slips through to BOQ review, the user must be able to
+click a warning and request that Vectorworks select/zoom to the relevant model
+object or duplicate group using the general BOQ element navigation contract.
+
 ---
 
 ## 11. Regeneration / refresh rules
@@ -549,6 +618,9 @@ Implementation options:
   prototype with a default class palette inherited by the generated solids;
 - allow materials to be allocated to framing members, with Advanced-tab links
   for editing generated classes and allocating materials by member type;
+- support double studs as a configurable framing option;
+- allow top plates and bottom plates to use separate material assignments rather
+  than one shared `plate` material;
 - optionally add per-opening window/door ledgers above and beneath lintels over a
   configurable height, defaulting to `120 mm`. The
   ledger is generally stud-sized, installed length-long by height-short, with
@@ -603,6 +675,8 @@ A whole house could easily create thousands of members. Therefore:
 - Tool produces rollups by member type, size and grade.
 - Tool exports JSON suitable for iQs cost planning.
 - Quantities do not depend on graphical LOD.
+- Exported quantity objects carry stable references so every BOQ row and warning
+  can locate and show the source Vectorworks model/viewer object.
 
 ### Stability
 
@@ -610,6 +684,8 @@ A whole house could easily create thousands of members. Therefore:
 - Tool must not leave orphaned temporary geometry.
 - Tool must not require symbols for every stud/member.
 - Tool must be safe on multiple selected walls.
+- Exporter-side duplicate-in-place warnings must protect BOQ quantities from
+  identical overlapping iQs objects, including manually duplicated objects.
 
 ---
 

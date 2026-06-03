@@ -81,6 +81,17 @@ host wall, reports stale duplicates, and creates one canonical replacement.
 - allow materials to be allocated to framing members
 - add Advanced-tab links for editing generated classes and allocating materials
   by framing member type
+- support double studs as a configurable framing option
+- allow top plates and bottom plates to use different material assignments,
+  rather than a single shared `plate` material
+- add BOQ click-to-show navigation for every extracted iQs quantity element, so
+  the iQs HTML BOQ can be used as the review source of truth alongside the
+  Vectorworks model/viewer
+- add exporter-side duplicate-in-place linting for all iQs quantity objects, with
+  BOQ warnings linked to the same click-to-show model navigation
+- explore a separate roof-framing workflow for rafters, ridges/hips/valleys,
+  purlins, battens and ceiling joists; see
+  `iqs_vw_roof_framing_tool_roadmap.md`
 
 V0.1 accepts straight walls with linear start-to-end top and bottom heights.
 Walls with intermediate peak breaks, including complex fitted profiles, are

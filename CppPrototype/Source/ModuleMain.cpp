@@ -249,6 +249,7 @@ namespace
         EnsureTextField(format, "lower_ledger");
         EnsureTextField(format, "upper_ledger");
         EnsureTextField(format, "continue_jack_studs_to_lintel_underside");
+        EnsureTextField(format, "sill_support_jacks");
         EnsureTextField(format, "last_framed_unix");
     }
 
@@ -625,6 +626,7 @@ namespace
         bool lowerLedger = false;
         bool upperLedger = false;
         bool continueJackStudsToLintelUnderside = false;
+        bool sillSupportJacks = false;
     };
 
     struct OpeningLintelOverride
@@ -636,6 +638,7 @@ namespace
         bool lowerLedger = false;
         bool upperLedger = false;
         bool continueJackStudsToLintelUnderside = false;
+        bool sillSupportJacks = false;
     };
 
     std::map<std::string, OpeningLintelOverride> gOpeningLintelOverrides;
@@ -1121,6 +1124,41 @@ namespace
         return handle;
     }
 
+    MCObjectHandle AddHorizontalMember(VWFC::VWObjects::VWGroupObj& group,
+                                       const VWFC::Math::VWPoint2D& wallStart,
+                                       const VWFC::Math::VWPoint2D& along,
+                                       const VWFC::Math::VWPoint2D& normal,
+                                       double stationStartMm, double alongLengthMm,
+                                       double centerOffsetMm, double depthMm,
+                                       double zStartMm, double zHeightMm,
+                                       const std::string& memberType)
+    {
+        if (alongLengthMm <= 0.0 || depthMm <= 0.0 || zHeightMm <= 0.0) { return nullptr; }
+
+        const double halfDepth = depthMm / 2.0;
+        const auto startFace =
+            WallPoint(wallStart, along, normal, stationStartMm, centerOffsetMm - halfDepth);
+        const auto endFace =
+            WallPoint(wallStart, along, normal, stationStartMm + alongLengthMm,
+                      centerOffsetMm - halfDepth);
+
+        VWFC::Math::VWPolygon3D profile;
+        profile.AddVertex(VWFC::Math::VWPoint3D(startFace.x, startFace.y, zStartMm));
+        profile.AddVertex(VWFC::Math::VWPoint3D(startFace.x, startFace.y, zStartMm + zHeightMm));
+        profile.AddVertex(VWFC::Math::VWPoint3D(endFace.x, endFace.y, zStartMm + zHeightMm));
+        profile.AddVertex(VWFC::Math::VWPoint3D(endFace.x, endFace.y, zStartMm));
+        profile.SetClosed(true);
+
+        VWFC::VWObjects::VWExtrudeObj member(profile, depthMm);
+        MCObjectHandle handle = member;
+        group.AddObject(handle);
+        gSDK->SetObjectClass(handle, GeneratedMemberClassID(memberType));
+        gSDK->SetFColorsByClass(handle);
+        gSDK->SetFPatByClass(handle);
+        gSDK->ResetObject(handle);
+        return handle;
+    }
+
     std::string MemberJson(const FrameMember& member)
     {
         return "{\"member_id\":" + JsonString(member.id) +
@@ -1221,6 +1259,8 @@ namespace
             const TXString storedUpperLedger = GetRecordText(openingRecord, "upper_ledger");
             const TXString storedJackStudOverrun =
                 GetRecordText(openingRecord, "continue_jack_studs_to_lintel_underside");
+            const TXString storedSillSupportJacks =
+                GetRecordText(openingRecord, "sill_support_jacks");
             const double persistedWidth =
                 PositiveDoubleOrDefault(storedWidth, gSettings.headerWidthMm);
             const double persistedHeight =
@@ -1255,6 +1295,10 @@ namespace
                     ? overrideIt->second.continueJackStudsToLintelUnderside
                     : BoolOrDefault(storedJackStudOverrun,
                                     gSettings.continueJackStudsToLintelUnderside);
+            opening.sillSupportJacks =
+                overrideIt != gOpeningLintelOverrides.end()
+                    ? overrideIt->second.sillSupportJacks
+                    : BoolOrDefault(storedSillSupportJacks, false);
             const bool duplicate = std::any_of(openings.begin(), openings.end(),
                                                [&](const WallOpening& existing) {
                 return existing.type == opening.type &&
@@ -1348,12 +1392,12 @@ namespace
                              double centerOffsetMm =
                                  std::numeric_limits<double>::quiet_NaN()) {
             MCObjectHandle memberHandle =
-                AddRectangularMember(group, start, along, normal, stationStart, alongLength,
-                                     std::isnan(centerOffsetMm)
-                                         ? component.centerOffsetMm
-                                         : centerOffsetMm,
-                                     geometryDepth, zStart, zHeight,
-                                     type);
+                AddHorizontalMember(group, start, along, normal, stationStart, alongLength,
+                                    std::isnan(centerOffsetMm)
+                                        ? component.centerOffsetMm
+                                        : centerOffsetMm,
+                                    geometryDepth, zStart, zHeight,
+                                    type);
             if (!memberHandle)
             {
                 return;
@@ -1924,6 +1968,11 @@ namespace
             };
 
             std::vector<double> jackStations;
+            if (opening.type == "WINDOW" && opening.sillSupportJacks)
+            {
+                addLowerJack(openingLeft + kStudWidthMm / 2.0);
+                addLowerJack(openingRight - kStudWidthMm / 2.0);
+            }
             for (double station : stations)
             {
                 if (station <= openingLeft || station >= openingRight)
@@ -2554,7 +2603,8 @@ namespace
         LintelHeight,
         LowerLedger,
         UpperLedger,
-        JackStudOverrun
+        JackStudOverrun,
+        SillSupportJacks
     };
 
     class CFramingSettingsDialog : public VWDialog
@@ -2626,7 +2676,8 @@ namespace
                 { opening.lintelWidthMm, opening.lintelHeightMm,
                   opening.lintelCount, opening.lintelID,
                   opening.lowerLedger, opening.upperLedger,
-                  opening.continueJackStudsToLintelUnderside };
+                  opening.continueJackStudsToLintelUnderside,
+                  opening.sillSupportJacks };
             MCObjectHandle record = EnsureOpeningRecord(opening.handle);
             SetRecordText(record, "lintel_id", opening.lintelID.c_str());
             SetRecordText(record, "lintel_count", TXString::ToStringInt(opening.lintelCount));
@@ -2636,6 +2687,8 @@ namespace
             SetRecordText(record, "upper_ledger", Bool(opening.upperLedger).c_str());
             SetRecordText(record, "continue_jack_studs_to_lintel_underside",
                           Bool(opening.continueJackStudsToLintelUnderside).c_str());
+            SetRecordText(record, "sill_support_jacks",
+                          Bool(opening.sillSupportJacks).c_str());
             SetRecordText(record, "last_framed_unix",
                           TXString::ToStringInt(static_cast<Sint32>(Now())));
         }
@@ -2827,6 +2880,7 @@ namespace
             fOpeningList.AddColumn("Lower ledger", 85);
             fOpeningList.AddColumn("Upper ledger", 85);
             fOpeningList.AddColumn("Jack overrun", 85);
+            fOpeningList.AddColumn("Sill jacks", 85);
             for (size_t row = 0; row < fOpeningRows.size(); ++row)
             {
                 fOpeningList.AddRow("");
@@ -2926,6 +2980,12 @@ namespace
                 opening.continueJackStudsToLintelUnderside
                     ? CGSMultiStateValueChange::eStateValueOn
                     : CGSMultiStateValueChange::eStateValueOff);
+            VWListBrowserItem sillSupportJacksItem =
+                fOpeningList.GetItem(row, static_cast<size_t>(EOpeningListColumn::SillSupportJacks));
+            sillSupportJacksItem.SetItemInteractionType(kListBrowserItemInteractionEditCheckState);
+            sillSupportJacksItem.SetItemCheckState(
+                opening.sillSupportJacks ? CGSMultiStateValueChange::eStateValueOn
+                                         : CGSMultiStateValueChange::eStateValueOff);
         }
 
         void OnOpeningListDirectEdit(TControlID, VWListBrowserEventArgs& eventArgs)
@@ -2944,7 +3004,8 @@ namespace
                 column == static_cast<size_t>(EOpeningListColumn::UpperLedger);
             const bool checkboxColumn =
                 ledgerColumn ||
-                column == static_cast<size_t>(EOpeningListColumn::JackStudOverrun);
+                column == static_cast<size_t>(EOpeningListColumn::JackStudOverrun) ||
+                column == static_cast<size_t>(EOpeningListColumn::SillSupportJacks);
             if (checkboxColumn &&
                 (type == EListBrowserDirectEditType::QueryItemListRetrieval ||
                  type == EListBrowserDirectEditType::QueryItemValue))
@@ -2954,7 +3015,9 @@ namespace
                          ? opening.lowerLedger
                          : column == static_cast<size_t>(EOpeningListColumn::UpperLedger)
                                ? opening.upperLedger
-                               : opening.continueJackStudsToLintelUnderside)
+                               : column == static_cast<size_t>(EOpeningListColumn::JackStudOverrun)
+                                     ? opening.continueJackStudsToLintelUnderside
+                                     : opening.sillSupportJacks)
                         ? CGSMultiStateValueChange::eStateValueOn
                         : CGSMultiStateValueChange::eStateValueOff;
                 return;
@@ -2967,7 +3030,8 @@ namespace
 
             if (column == static_cast<size_t>(EOpeningListColumn::LowerLedger) ||
                 column == static_cast<size_t>(EOpeningListColumn::UpperLedger) ||
-                column == static_cast<size_t>(EOpeningListColumn::JackStudOverrun))
+                column == static_cast<size_t>(EOpeningListColumn::JackStudOverrun) ||
+                column == static_cast<size_t>(EOpeningListColumn::SillSupportJacks))
             {
                 const bool enabled =
                     eventArgs.GetCellCheckbox().fStateValue ==
@@ -2984,7 +3048,14 @@ namespace
                     }
                     else
                     {
-                        opening.continueJackStudsToLintelUnderside = enabled;
+                        if (column == static_cast<size_t>(EOpeningListColumn::JackStudOverrun))
+                        {
+                            opening.continueJackStudsToLintelUnderside = enabled;
+                        }
+                        else
+                        {
+                            opening.sillSupportJacks = enabled;
+                        }
                     }
                 }
                 SetOpeningRow(row);
