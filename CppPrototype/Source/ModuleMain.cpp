@@ -864,10 +864,10 @@ namespace
         return result;
     }
 
-    FramingComponent FindFramingComponent(MCObjectHandle wall,
-                                          const VWFC::VWObjects::VWWallObj& wallObj)
+    std::vector<FramingComponent> FindFramingComponents(
+        MCObjectHandle wall, const VWFC::VWObjects::VWWallObj& wallObj)
     {
-        FramingComponent result;
+        std::vector<FramingComponent> results;
         double runningOffset = -wallObj.GetWidth() / 2.0;
         for (size_t i = 0; i < wallObj.GetComponentCount(); ++i)
         {
@@ -877,6 +877,7 @@ namespace
             const double centerOffset = -(runningOffset + info.width / 2.0);
             if (Lower(info.componentName) == Lower(gSettings.componentName))
             {
+                FramingComponent result;
                 result.found = true;
                 result.index = i;
                 result.name = info.componentName;
@@ -892,11 +893,27 @@ namespace
                 {
                     result.bottomOffsetMm = offset;
                 }
-                return result;
+                results.push_back(result);
             }
             runningOffset += info.width;
         }
 
+        return results;
+    }
+
+    FramingComponent FindFramingComponent(MCObjectHandle wall,
+                                          const VWFC::VWObjects::VWWallObj& wallObj)
+    {
+        const std::vector<FramingComponent> components = FindFramingComponents(wall, wallObj);
+        return components.empty() ? FramingComponent{} : components.front();
+    }
+
+    TXString ComponentSourceRef(const FramingComponent& component, bool includeIndex)
+    {
+        if (!includeIndex) { return component.name; }
+        TXString result = component.name;
+        result += " #";
+        result += TXString::ToStringInt(static_cast<Sint32>(component.index + 1));
         return result;
     }
 
@@ -925,8 +942,31 @@ namespace
         return true;
     }
 
+    bool LineIntersectionStations(const VWFC::Math::VWPoint2D& origin,
+                                  const VWFC::Math::VWPoint2D& direction,
+                                  const VWFC::Math::VWPoint2D& otherOrigin,
+                                  const VWFC::Math::VWPoint2D& otherDirection,
+                                  double& station,
+                                  double& otherStation)
+    {
+        const double cross =
+            direction.x * otherDirection.y - direction.y * otherDirection.x;
+        if (std::abs(cross) <= 0.000001) { return false; }
+        const double dx = otherOrigin.x - origin.x;
+        const double dy = otherOrigin.y - origin.y;
+        station = (dx * otherDirection.y - dy * otherDirection.x) / cross;
+        otherStation = (dx * direction.y - dy * direction.x) / cross;
+        return true;
+    }
+
+    double Dot(const VWFC::Math::VWPoint2D& lhs, const VWFC::Math::VWPoint2D& rhs)
+    {
+        return lhs.x * rhs.x + lhs.y * rhs.y;
+    }
+
     PlateExtents FindPlateExtents(MCObjectHandle wall,
-                                  const std::vector<MCObjectHandle>& contextWalls)
+                                  const std::vector<MCObjectHandle>& contextWalls,
+                                  const FramingComponent& component)
     {
         VWFC::VWObjects::VWWallObj wallObj(wall);
         const auto start = wallObj.GetStartPoint();
@@ -941,7 +981,6 @@ namespace
         const VWFC::Math::VWPoint2D along((end.x - start.x) / wallLength,
                                          (end.y - start.y) / wallLength);
         const VWFC::Math::VWPoint2D normal(-along.y, along.x);
-        const FramingComponent component = FindFramingComponent(wall, wallObj);
         if (!component.found) { return result; }
         const auto componentStart = WallPoint(start, along, normal, 0.0, component.centerOffsetMm);
 
@@ -959,39 +998,88 @@ namespace
                 (otherEnd.x - otherStart.x) / otherLength,
                 (otherEnd.y - otherStart.y) / otherLength);
             const VWFC::Math::VWPoint2D otherNormal(-otherAlong.y, otherAlong.x);
-            const FramingComponent otherComponent =
-                FindFramingComponent(contextWalls[otherIndex], otherObj);
-            if (!otherComponent.found) { continue; }
-            const auto otherComponentStart =
-                WallPoint(otherStart, otherAlong, otherNormal, 0.0,
-                          otherComponent.centerOffsetMm);
-
-            bool atStart = false;
-            if (SamePoint(start, otherStart) || SamePoint(start, otherEnd)) { atStart = true; }
-            else if (!SamePoint(end, otherStart) && !SamePoint(end, otherEnd)) { continue; }
-
-            double intersectionStation = 0.0;
-            if (!LineIntersectionStation(componentStart, along, otherComponentStart,
-                                         otherAlong, intersectionStation))
+            const std::vector<FramingComponent> otherComponents =
+                FindFramingComponents(contextWalls[otherIndex], otherObj);
+            for (const FramingComponent& otherComponent : otherComponents)
             {
-                continue;
-            }
-
-            const bool through = wallIndex < otherIndex;
-            const double outward = atStart ? -1.0 : 1.0;
-            const double faceAdjustment =
-                outward * otherComponent.depthMm / 2.0 * (through ? 1.0 : -1.0);
-            if (atStart) { result.startStationMm = intersectionStation + faceAdjustment; }
-            else { result.endStationMm = intersectionStation + faceAdjustment; }
-            if (through)
-            {
-                const double cornerStudStation =
-                    atStart
-                        ? result.startStationMm + otherComponent.depthMm + gSettings.studWidthMm / 2.0
-                        : result.endStationMm - otherComponent.depthMm - gSettings.studWidthMm / 2.0;
-                if (gSettings.generateCornerStuds)
+                const double halfOtherDepth = otherComponent.depthMm / 2.0;
+                const bool startSharesEndpoint =
+                    SamePoint(start, otherStart) || SamePoint(start, otherEnd);
+                const bool endSharesEndpoint =
+                    SamePoint(end, otherStart) || SamePoint(end, otherEnd);
+                if (startSharesEndpoint || endSharesEndpoint)
                 {
-                    result.cornerStudStationsMm.push_back(cornerStudStation);
+                    const bool thisWallRunsThroughCorner = wallIndex < otherIndex;
+                    if (startSharesEndpoint)
+                    {
+                        result.startStationMm =
+                            thisWallRunsThroughCorner
+                                ? std::min(result.startStationMm, -halfOtherDepth)
+                                : std::max(result.startStationMm, halfOtherDepth);
+                    }
+                    if (endSharesEndpoint)
+                    {
+                        result.endStationMm =
+                            thisWallRunsThroughCorner
+                                ? std::max(result.endStationMm, wallLength + halfOtherDepth)
+                                : std::min(result.endStationMm, wallLength - halfOtherDepth);
+                    }
+                    continue;
+                }
+
+                const auto otherComponentStart =
+                    WallPoint(otherStart, otherAlong, otherNormal, 0.0,
+                              otherComponent.centerOffsetMm);
+                auto endpointInsideOtherComponentRun = [&](const VWFC::Math::VWPoint2D& point) {
+                    const VWFC::Math::VWPoint2D delta(point.x - otherComponentStart.x,
+                                                     point.y - otherComponentStart.y);
+                    const double otherStation = Dot(delta, otherAlong);
+                    const double otherOffset = Dot(delta, otherNormal);
+                    return otherStation > 1.0 && otherStation < otherLength - 1.0 &&
+                           std::abs(otherOffset) <= halfOtherDepth + 1.0;
+                };
+
+                const auto componentEnd =
+                    WallPoint(start, along, normal, wallLength, component.centerOffsetMm);
+                const bool trimStart =
+                    endpointInsideOtherComponentRun(componentStart);
+                const bool trimEnd =
+                    endpointInsideOtherComponentRun(componentEnd);
+                if (!trimStart && !trimEnd) { continue; }
+
+                for (double otherFaceOffset :
+                     { otherComponent.centerOffsetMm - halfOtherDepth,
+                       otherComponent.centerOffsetMm + halfOtherDepth })
+                {
+                    const auto otherFaceStart =
+                        WallPoint(otherStart, otherAlong, otherNormal, 0.0, otherFaceOffset);
+
+                    double faceStation = 0.0;
+                    double otherFaceStation = 0.0;
+                    if (!LineIntersectionStations(componentStart, along, otherFaceStart,
+                                                  otherAlong, faceStation, otherFaceStation))
+                    {
+                        continue;
+                    }
+
+                    const bool hitsOtherRun =
+                        otherFaceStation > 1.0 && otherFaceStation < otherLength - 1.0;
+                    if (!hitsOtherRun) { continue; }
+
+                    if (trimStart &&
+                        faceStation >= -1.0 &&
+                        faceStation <= otherComponent.depthMm + 1.0)
+                    {
+                        result.startStationMm =
+                            std::max(result.startStationMm, faceStation);
+                    }
+                    if (trimEnd &&
+                        faceStation <= wallLength + 1.0 &&
+                        faceStation >= wallLength - otherComponent.depthMm - 1.0)
+                    {
+                        result.endStationMm =
+                            std::min(result.endStationMm, faceStation);
+                    }
                 }
             }
         }
@@ -1068,7 +1156,8 @@ namespace
             VWFC::Math::VWPoint3D(endFace.x, endFace.y, axisEndZMm - halfVerticalHeight));
         profile.SetClosed(true);
 
-        VWFC::VWObjects::VWExtrudeObj member(profile, depthMm);
+        const VWFC::Math::VWPoint3D extrusionDir(normal.x * depthMm, normal.y * depthMm, 0.0);
+        VWFC::VWObjects::VWSolidObj member(profile, extrusionDir);
         MCObjectHandle handle = member;
         group.AddObject(handle);
         gSDK->SetObjectClass(handle, GeneratedMemberClassID(memberType));
@@ -1114,7 +1203,8 @@ namespace
             rightFace.x, rightFace.y, centrelineBottomMm + bottomSlope * halfWidth));
         profile.SetClosed(true);
 
-        VWFC::VWObjects::VWExtrudeObj member(profile, depthMm);
+        const VWFC::Math::VWPoint3D extrusionDir(normal.x * depthMm, normal.y * depthMm, 0.0);
+        VWFC::VWObjects::VWSolidObj member(profile, extrusionDir);
         MCObjectHandle handle = member;
         group.AddObject(handle);
         gSDK->SetObjectClass(handle, GeneratedMemberClassID(memberType));
@@ -1149,7 +1239,8 @@ namespace
         profile.AddVertex(VWFC::Math::VWPoint3D(endFace.x, endFace.y, zStartMm));
         profile.SetClosed(true);
 
-        VWFC::VWObjects::VWExtrudeObj member(profile, depthMm);
+        const VWFC::Math::VWPoint3D extrusionDir(normal.x * depthMm, normal.y * depthMm, 0.0);
+        VWFC::VWObjects::VWSolidObj member(profile, extrusionDir);
         MCObjectHandle handle = member;
         group.AddObject(handle);
         gSDK->SetObjectClass(handle, GeneratedMemberClassID(memberType));
@@ -1217,12 +1308,16 @@ namespace
             opening.stationMm = brk.offset;
             const double frameBottom =
                 Interpolate(frameBottomStart, frameBottomEnd, opening.stationMm, wallLength);
+            const double insertOffsetZ = EntityOffsetZ(insert);
+            const double openingBaseZ = std::abs(insertOffsetZ) > 0.001
+                                            ? insertOffsetZ
+                                            : frameBottom;
             if (parametricName.EqualNoCase("Door"))
             {
                 if (!gSettings.detectDoors) { continue; }
                 opening.type = "DOOR";
                 opening.widthMm = parametric.GetParamReal("ROWidth");
-                opening.bottomMm = frameBottom + EntityOffsetZ(insert);
+                opening.bottomMm = openingBaseZ;
                 opening.topMm = opening.bottomMm + parametric.GetParamReal("ROHeight");
             }
             else if (parametricName.EqualNoCase("Window"))
@@ -1235,12 +1330,12 @@ namespace
                 const TXString elevationSetAt = parametric.GetParamString("ElevationSetAt");
                 if (elevationSetAt.EqualNoCase("Head of Window"))
                 {
-                    opening.topMm = frameBottom + elevationMm + EntityOffsetZ(insert);
+                    opening.topMm = openingBaseZ + elevationMm;
                     opening.bottomMm = opening.topMm - heightMm;
                 }
                 else
                 {
-                    opening.bottomMm = frameBottom + elevationMm + EntityOffsetZ(insert);
+                    opening.bottomMm = openingBaseZ + elevationMm;
                     opening.topMm = opening.bottomMm + heightMm;
                 }
             }
@@ -1313,7 +1408,8 @@ namespace
     }
 
     GeneratedFrame GenerateSimpleFrame(
-        MCObjectHandle wall, const PlateExtents& plateExtents,
+        MCObjectHandle wall, const FramingComponent& component,
+        const PlateExtents& plateExtents, bool includeComponentIndex,
         std::map<std::string, size_t>& memberNameCounters)
     {
         const double kStudWidthMm = gSettings.studWidthMm;
@@ -1340,7 +1436,6 @@ namespace
                                          (end.y - start.y) / wallLength);
         const VWFC::Math::VWPoint2D normal(-along.y, along.x);
 
-        const FramingComponent component = FindFramingComponent(wall, wallObj);
         if (!component.found) { return result; }
         wallProfile.bottomStartMm += component.bottomOffsetMm;
         wallProfile.bottomEndMm += component.bottomOffsetMm;
@@ -1364,7 +1459,7 @@ namespace
         result.frameUUID = NewUUID().c_str();
         result.hostUUID = EnsureHostUUID(wall);
         result.sourceComponentMode = "COMPONENT_NAME";
-        result.sourceComponentRef = component.name;
+        result.sourceComponentRef = ComponentSourceRef(component, includeComponentIndex);
         result.wallLengthMm = wallLength;
         result.wallHeightMm = frameHeight;
         result.frameDepthMm = component.depthMm;
@@ -3319,7 +3414,9 @@ public:
                     if (reportCleanup) { ++unsupportedWallCount; }
                     continue;
                 }
-                if (!FindFramingComponent(wall, wallObj).found)
+                const std::vector<FramingComponent> components =
+                    FindFramingComponents(wall, wallObj);
+                if (components.empty())
                 {
                     if (reportCleanup) { ++missingComponentCount; }
                     continue;
@@ -3327,7 +3424,7 @@ public:
 
                 const TXString hostUUID = EnsureHostUUID(wall);
                 const std::vector<MCObjectHandle> linkedFrames = FindLinkedFrames(hostUUID);
-                if (reportCleanup && linkedFrames.size() > 1)
+                if (reportCleanup && linkedFrames.size() > components.size())
                 {
                     ++duplicateHostCount;
                     duplicateFrameCount += linkedFrames.size();
@@ -3338,9 +3435,14 @@ public:
                     if (reportCleanup) { ++refreshedFrameCount; }
                 }
 
-                GeneratedFrame frame = GenerateSimpleFrame(
-                    wall, FindPlateExtents(wall, contextWalls), memberNameCounters);
-                if (frame.group) { frames.push_back(frame); }
+                const bool includeComponentIndex = components.size() > 1;
+                for (const FramingComponent& component : components)
+                {
+                    GeneratedFrame frame = GenerateSimpleFrame(
+                        wall, component, FindPlateExtents(wall, contextWalls, component),
+                        includeComponentIndex, memberNameCounters);
+                    if (frame.group) { frames.push_back(frame); }
+                }
             }
         };
 
