@@ -1950,7 +1950,7 @@ namespace
                 queueVerticalMember(
                     "", type, scheduleStation,
                     studBottom, studTop, bottomSlope, studTopSlope,
-                    type == "TRIMMER_STUD" ? 80 : 70, i);
+                    type == "TRIMMER_STUD" ? 130 : 120, i);
             };
 
             for (Sint32 i = 0; i < gSettings.trimmerStudCount; ++i)
