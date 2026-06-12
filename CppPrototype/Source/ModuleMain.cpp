@@ -595,6 +595,16 @@ namespace
         TXString profileDimBSemantic;
     };
 
+    struct PlateExtents
+    {
+        double defaultStartStationMm = 0.0;
+        double defaultEndStationMm = 0.0;
+        double startStationMm = 0.0;
+        double endStationMm = 0.0;
+        std::vector<double> cornerStudStationsMm;
+        std::vector<std::string> junctionDecisions;
+    };
+
     struct GeneratedFrame
     {
         MCObjectHandle group = nullptr;
@@ -607,6 +617,7 @@ namespace
         double frameDepthMm = 0.0;
         size_t studCount = 0;
         std::vector<FrameMember> members;
+        PlateExtents plateExtents;
     };
 
     struct WallOpening
@@ -642,13 +653,6 @@ namespace
     };
 
     std::map<std::string, OpeningLintelOverride> gOpeningLintelOverrides;
-
-    struct PlateExtents
-    {
-        double startStationMm = 0.0;
-        double endStationMm = 0.0;
-        std::vector<double> cornerStudStationsMm;
-    };
 
     struct WallVerticalProfile
     {
@@ -927,6 +931,24 @@ namespace
         return Distance(lhs, rhs) <= 1.0;
     }
 
+    bool NearlyParallel(const VWFC::Math::VWPoint2D& lhs,
+                        const VWFC::Math::VWPoint2D& rhs)
+    {
+        const double cross = lhs.x * rhs.y - lhs.y * rhs.x;
+        return std::abs(cross) <= 0.01;
+    }
+
+    bool ThisWallRunsThroughJunction(MCObjectHandle wall, MCObjectHandle otherWall,
+                                     double wallLength, double otherLength)
+    {
+        if (std::abs(wallLength - otherLength) > 1.0)
+        {
+            return wallLength > otherLength;
+        }
+        return std::string(EnsureHostUUID(wall).GetCharPtr()) <
+               std::string(EnsureHostUUID(otherWall).GetCharPtr());
+    }
+
     bool LineIntersectionStation(const VWFC::Math::VWPoint2D& origin,
                                  const VWFC::Math::VWPoint2D& direction,
                                  const VWFC::Math::VWPoint2D& otherOrigin,
@@ -972,7 +994,11 @@ namespace
         const auto start = wallObj.GetStartPoint();
         const auto end = wallObj.GetEndPoint();
         const double wallLength = Distance(start, end);
-        PlateExtents result{ 0.0, wallLength };
+        PlateExtents result;
+        result.defaultStartStationMm = 0.0;
+        result.defaultEndStationMm = wallLength;
+        result.startStationMm = 0.0;
+        result.endStationMm = wallLength;
         if (wallLength <= 0.0) { return result; }
         const auto wallIt = std::find(contextWalls.begin(), contextWalls.end(), wall);
         if (wallIt == contextWalls.end()) { return result; }
@@ -983,10 +1009,41 @@ namespace
         const VWFC::Math::VWPoint2D normal(-along.y, along.x);
         if (!component.found) { return result; }
         const auto componentStart = WallPoint(start, along, normal, 0.0, component.centerOffsetMm);
+        const auto componentEnd =
+            WallPoint(start, along, normal, wallLength, component.centerOffsetMm);
+
+        auto addDecision = [&](MCObjectHandle otherWall,
+                               const FramingComponent& otherComponent,
+                               const std::string& condition,
+                               const std::string& endpoint,
+                               const std::string& decision,
+                               double junctionStation,
+                               double otherJunctionStation,
+                               double beforeStart,
+                               double beforeEnd) {
+            std::ostringstream out;
+            out << "{\"wall_uuid\":" << JsonString(EnsureHostUUID(otherWall))
+                << ",\"component_ref\":" << JsonString(ComponentSourceRef(otherComponent, true))
+                << ",\"condition\":" << JsonString(condition)
+                << ",\"endpoint\":" << JsonString(endpoint)
+                << ",\"decision\":" << JsonString(decision)
+                << ",\"junction_station_mm\":"
+                << (std::isnan(junctionStation) ? "null" : Num(junctionStation))
+                << ",\"other_junction_station_mm\":"
+                << (std::isnan(otherJunctionStation) ? "null" : Num(otherJunctionStation))
+                << ",\"other_depth_mm\":" << Num(otherComponent.depthMm)
+                << ",\"start_before_mm\":" << Num(beforeStart)
+                << ",\"end_before_mm\":" << Num(beforeEnd)
+                << ",\"start_after_mm\":" << Num(result.startStationMm)
+                << ",\"end_after_mm\":" << Num(result.endStationMm)
+                << "}";
+            result.junctionDecisions.push_back(out.str());
+        };
 
         for (size_t otherIndex = 0; otherIndex < contextWalls.size(); ++otherIndex)
         {
             if (otherIndex == wallIndex) { continue; }
+            if (LayerName(contextWalls[otherIndex]) != LayerName(wall)) { continue; }
             VWFC::VWObjects::VWWallObj otherObj(contextWalls[otherIndex]);
             if (otherObj.IsRound()) { continue; }
 
@@ -1002,85 +1059,166 @@ namespace
                 FindFramingComponents(contextWalls[otherIndex], otherObj);
             for (const FramingComponent& otherComponent : otherComponents)
             {
+                const double beforeStart = result.startStationMm;
+                const double beforeEnd = result.endStationMm;
                 const double halfOtherDepth = otherComponent.depthMm / 2.0;
+                const auto otherComponentStart =
+                    WallPoint(otherStart, otherAlong, otherNormal, 0.0,
+                              otherComponent.centerOffsetMm);
+                const auto otherComponentEnd =
+                    WallPoint(otherStart, otherAlong, otherNormal, otherLength,
+                              otherComponent.centerOffsetMm);
                 const bool startSharesEndpoint =
                     SamePoint(start, otherStart) || SamePoint(start, otherEnd);
                 const bool endSharesEndpoint =
                     SamePoint(end, otherStart) || SamePoint(end, otherEnd);
                 if (startSharesEndpoint || endSharesEndpoint)
                 {
-                    const bool thisWallRunsThroughCorner = wallIndex < otherIndex;
+                    const bool startContinues =
+                        SamePoint(componentStart, otherComponentStart) ||
+                        SamePoint(componentStart, otherComponentEnd);
+                    const bool endContinues =
+                        SamePoint(componentEnd, otherComponentStart) ||
+                        SamePoint(componentEnd, otherComponentEnd);
+                    const bool continuation =
+                        NearlyParallel(along, otherAlong) &&
+                        ((startSharesEndpoint && startContinues) ||
+                         (endSharesEndpoint && endContinues));
+                    if (continuation)
+                    {
+                        addDecision(contextWalls[otherIndex], otherComponent,
+                                    "continuation",
+                                    startSharesEndpoint && endSharesEndpoint
+                                        ? "both"
+                                        : (startSharesEndpoint ? "start" : "end"),
+                                    "collinear_frame_continuation_no_extent_change",
+                                    std::numeric_limits<double>::quiet_NaN(),
+                                    std::numeric_limits<double>::quiet_NaN(),
+                                    beforeStart, beforeEnd);
+                        continue;
+                    }
+
+                    double junctionStation = 0.0;
+                    double otherJunctionStation = 0.0;
+                    if (!LineIntersectionStations(componentStart, along,
+                                                  otherComponentStart, otherAlong,
+                                                  junctionStation, otherJunctionStation))
+                    {
+                        continue;
+                    }
+
+                    const double stationTolerance =
+                        std::max(component.depthMm, otherComponent.depthMm) * 2.0 + 10.0;
+                    const bool nearThisEndpoint =
+                        (startSharesEndpoint &&
+                         junctionStation >= -stationTolerance &&
+                         junctionStation <= stationTolerance) ||
+                        (endSharesEndpoint &&
+                         junctionStation >= wallLength - stationTolerance &&
+                         junctionStation <= wallLength + stationTolerance);
+                    const bool nearOtherEndpoint =
+                        otherJunctionStation >= -stationTolerance &&
+                        otherJunctionStation <= otherLength + stationTolerance;
+                    if (!nearThisEndpoint || !nearOtherEndpoint)
+                    {
+                        continue;
+                    }
+
+                    const bool thisWallRunsThroughCorner =
+                        ThisWallRunsThroughJunction(wall, contextWalls[otherIndex],
+                                                    wallLength, otherLength);
                     if (startSharesEndpoint)
                     {
-                        result.startStationMm =
+                        const double targetStart =
                             thisWallRunsThroughCorner
-                                ? std::min(result.startStationMm, -halfOtherDepth)
-                                : std::max(result.startStationMm, halfOtherDepth);
+                                ? junctionStation - halfOtherDepth
+                                : junctionStation + halfOtherDepth;
+                        result.startStationMm =
+                            targetStart;
                     }
                     if (endSharesEndpoint)
                     {
-                        result.endStationMm =
+                        const double targetEnd =
                             thisWallRunsThroughCorner
-                                ? std::max(result.endStationMm, wallLength + halfOtherDepth)
-                                : std::min(result.endStationMm, wallLength - halfOtherDepth);
+                                ? junctionStation + halfOtherDepth
+                                : junctionStation - halfOtherDepth;
+                        result.endStationMm =
+                            targetEnd;
                     }
+                    addDecision(contextWalls[otherIndex], otherComponent,
+                                "corner",
+                                startSharesEndpoint && endSharesEndpoint
+                                    ? "both"
+                                    : (startSharesEndpoint ? "start" : "end"),
+                                thisWallRunsThroughCorner
+                                    ? "l_junction_longer_or_tiebreaker_frame_runs_through"
+                                    : "l_junction_abutting_frame_trims_to_through_frame_face",
+                                junctionStation, otherJunctionStation,
+                                beforeStart, beforeEnd);
                     continue;
                 }
 
-                const auto otherComponentStart =
-                    WallPoint(otherStart, otherAlong, otherNormal, 0.0,
-                              otherComponent.centerOffsetMm);
-                auto endpointInsideOtherComponentRun = [&](const VWFC::Math::VWPoint2D& point) {
+                auto endpointInsideOtherComponentRun = [&](const VWFC::Math::VWPoint2D& point,
+                                                           double& otherStation) {
                     const VWFC::Math::VWPoint2D delta(point.x - otherComponentStart.x,
                                                      point.y - otherComponentStart.y);
-                    const double otherStation = Dot(delta, otherAlong);
+                    otherStation = Dot(delta, otherAlong);
                     const double otherOffset = Dot(delta, otherNormal);
                     return otherStation > 1.0 && otherStation < otherLength - 1.0 &&
                            std::abs(otherOffset) <= halfOtherDepth + 1.0;
                 };
 
-                const auto componentEnd =
-                    WallPoint(start, along, normal, wallLength, component.centerOffsetMm);
+                double startOtherStation = 0.0;
+                double endOtherStation = 0.0;
                 const bool trimStart =
-                    endpointInsideOtherComponentRun(componentStart);
+                    endpointInsideOtherComponentRun(componentStart, startOtherStation);
                 const bool trimEnd =
-                    endpointInsideOtherComponentRun(componentEnd);
-                if (!trimStart && !trimEnd) { continue; }
-
-                for (double otherFaceOffset :
-                     { otherComponent.centerOffsetMm - halfOtherDepth,
-                       otherComponent.centerOffsetMm + halfOtherDepth })
+                    endpointInsideOtherComponentRun(componentEnd, endOtherStation);
+                if (!trimStart && !trimEnd)
                 {
-                    const auto otherFaceStart =
-                        WallPoint(otherStart, otherAlong, otherNormal, 0.0, otherFaceOffset);
-
-                    double faceStation = 0.0;
-                    double otherFaceStation = 0.0;
-                    if (!LineIntersectionStations(componentStart, along, otherFaceStart,
-                                                  otherAlong, faceStation, otherFaceStation))
-                    {
-                        continue;
-                    }
-
-                    const bool hitsOtherRun =
-                        otherFaceStation > 1.0 && otherFaceStation < otherLength - 1.0;
-                    if (!hitsOtherRun) { continue; }
-
-                    if (trimStart &&
-                        faceStation >= -1.0 &&
-                        faceStation <= otherComponent.depthMm + 1.0)
-                    {
-                        result.startStationMm =
-                            std::max(result.startStationMm, faceStation);
-                    }
-                    if (trimEnd &&
-                        faceStation <= wallLength + 1.0 &&
-                        faceStation >= wallLength - otherComponent.depthMm - 1.0)
-                    {
-                        result.endStationMm =
-                            std::min(result.endStationMm, faceStation);
-                    }
+                    continue;
                 }
+
+                double junctionStation = 0.0;
+                double otherJunctionStation = 0.0;
+                if (!LineIntersectionStations(componentStart, along,
+                                              otherComponentStart, otherAlong,
+                                              junctionStation, otherJunctionStation))
+                {
+                    continue;
+                }
+
+                bool teeTrimmed = false;
+                if (trimStart &&
+                    junctionStation >= -otherComponent.depthMm - 1.0 &&
+                    junctionStation <= otherComponent.depthMm + 1.0 &&
+                    otherJunctionStation > 1.0 &&
+                    otherJunctionStation < otherLength - 1.0)
+                {
+                    result.startStationMm =
+                        std::max(result.startStationMm,
+                                 junctionStation + halfOtherDepth);
+                    teeTrimmed = true;
+                }
+                if (trimEnd &&
+                    junctionStation <= wallLength + otherComponent.depthMm + 1.0 &&
+                    junctionStation >= wallLength - otherComponent.depthMm - 1.0 &&
+                    otherJunctionStation > 1.0 &&
+                    otherJunctionStation < otherLength - 1.0)
+                {
+                    result.endStationMm =
+                        std::min(result.endStationMm,
+                                 junctionStation - halfOtherDepth);
+                    teeTrimmed = true;
+                }
+                addDecision(contextWalls[otherIndex], otherComponent,
+                            "tee",
+                            trimStart && trimEnd ? "both" : (trimStart ? "start" : "end"),
+                            teeTrimmed
+                                ? "trimmed_to_intersecting_component_face"
+                                : "endpoint_inside_component_but_no_face_intersection",
+                            junctionStation, otherJunctionStation,
+                            beforeStart, beforeEnd);
             }
         }
         return result;
@@ -1463,6 +1601,7 @@ namespace
         result.wallLengthMm = wallLength;
         result.wallHeightMm = frameHeight;
         result.frameDepthMm = component.depthMm;
+        result.plateExtents = plateExtents;
 
         const std::string frameName = "iQs_StudWallFrame_" + std::string(result.frameUUID.GetCharPtr());
         gSDK->SetObjectName(result.group, frameName.c_str());
@@ -2354,6 +2493,41 @@ namespace
         return result;
     }
 
+    std::string PlateExtentsJson(const PlateExtents& extents)
+    {
+        std::ostringstream corners;
+        corners << "[";
+        for (size_t i = 0; i < extents.cornerStudStationsMm.size(); ++i)
+        {
+            if (i > 0) { corners << ","; }
+            corners << Num(extents.cornerStudStationsMm[i]);
+        }
+        corners << "]";
+
+        std::ostringstream decisions;
+        decisions << "[";
+        for (size_t i = 0; i < extents.junctionDecisions.size(); ++i)
+        {
+            if (i > 0) { decisions << ","; }
+            decisions << extents.junctionDecisions[i];
+        }
+        decisions << "]";
+
+        const bool changedPlates =
+            std::abs(extents.startStationMm - extents.defaultStartStationMm) > 0.001 ||
+            std::abs(extents.endStationMm - extents.defaultEndStationMm) > 0.001;
+        return "{\"default_plate_extents_mm\":{\"start\":" +
+               Num(extents.defaultStartStationMm) +
+               ",\"end\":" + Num(extents.defaultEndStationMm) + "}" +
+               ",\"resolved_plate_extents_mm\":{\"start\":" + Num(extents.startStationMm) +
+               ",\"end\":" + Num(extents.endStationMm) + "}" +
+               ",\"corner_stud_stations_mm\":" + corners.str() +
+               ",\"placement_effects\":{\"plate_or_end_stud_extents_changed\":" +
+               Bool(changedPlates) +
+               ",\"corner_studs_added\":" + Bool(!extents.cornerStudStationsMm.empty()) + "}" +
+               ",\"neighbouring_walls_considered\":" + decisions.str() + "}";
+    }
+
     std::string GeneratedFrameJson(const GeneratedFrame& frame)
     {
         double lengthTotalMm = 0.0;
@@ -2379,6 +2553,7 @@ namespace
                ",\"member_count_total\":" + std::to_string(frame.members.size()) +
                ",\"length_total_lm\":" + Num(lengthTotalMm / 1000.0) +
                ",\"volume_total_m3\":" + Num(volumeTotalMm3 / 1000000000.0) +
+               ",\"junctions\":" + PlateExtentsJson(frame.plateExtents) +
                ",\"members\":" + MembersJson(frame.members) + "}";
     }
 
@@ -2576,7 +2751,33 @@ namespace
         return out.str();
     }
 
-    std::string WallJson(MCObjectHandle wall)
+    std::string WallJunctionInputsJson(MCObjectHandle wall,
+                                       const std::vector<MCObjectHandle>& contextWalls)
+    {
+        VWFC::VWObjects::VWWallObj wallObj(wall);
+        if (!IsSupportedWallForV1(wallObj)) { return "[]"; }
+
+        const std::vector<FramingComponent> components =
+            FindFramingComponents(wall, wallObj);
+        std::ostringstream out;
+        out << "[";
+        for (size_t i = 0; i < components.size(); ++i)
+        {
+            if (i > 0) { out << ","; }
+            const FramingComponent& component = components[i];
+            out << "{\"component_ref\":" << JsonString(ComponentSourceRef(component, components.size() > 1))
+                << ",\"component_index\":" << component.index
+                << ",\"component_depth_mm\":" << Num(component.depthMm)
+                << ",\"component_center_offset_mm\":" << Num(component.centerOffsetMm)
+                << ",\"junctions\":" << PlateExtentsJson(FindPlateExtents(wall, contextWalls, component))
+                << "}";
+        }
+        out << "]";
+        return out.str();
+    }
+
+    std::string WallJson(MCObjectHandle wall,
+                         const std::vector<MCObjectHandle>& contextWalls)
     {
         VWFC::VWObjects::VWWallObj wallObj(wall);
         const auto start = wallObj.GetStartPoint();
@@ -2619,6 +2820,7 @@ namespace
             << ",\"elevation_profile_vertices\":" << ElevationProfileJson(wallObj)
             << ",\"peak_breaks\":" << PeakBreaksJson(wallObj)
             << ",\"inserted_objects\":" << SymbolBreaksJson(wallObj)
+            << ",\"junction_inputs\":" << WallJunctionInputsJson(wall, contextWalls)
             << "}";
         return out.str();
     }
@@ -3392,7 +3594,7 @@ public:
         for (size_t i = 0; i < walls.size(); ++i)
         {
             if (i > 0) { out << ","; }
-            out << WallJson(walls[i]);
+            out << WallJson(walls[i], contextWalls);
         }
         out << "]}\n";
         out.close();
