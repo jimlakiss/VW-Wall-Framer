@@ -1262,6 +1262,68 @@ namespace
         return handle;
     }
 
+    WorldPt3 WallPoint3D(const VWFC::Math::VWPoint2D& wallStart,
+                         const VWFC::Math::VWPoint2D& along,
+                         const VWFC::Math::VWPoint2D& normal,
+                         double stationMm, double offsetMm, double zMm)
+    {
+        const VWFC::Math::VWPoint2D point =
+            WallPoint(wallStart, along, normal, stationMm, offsetMm);
+        return WorldPt3(point.x, point.y, zMm);
+    }
+
+    MCObjectHandle AddMeshPrismMember(VWFC::VWObjects::VWGroupObj& group,
+                                      const std::vector<WorldPt3>& vertices,
+                                      const std::string& memberType)
+    {
+        if (vertices.size() != 8) { return nullptr; }
+
+        VWFC::VWObjects::VWMeshCreator mesh;
+        mesh.SetMeshSmoothing(VectorWorks::MeshSmoothing::eNone, 0.0);
+        const size_t part = mesh.AddPart();
+
+        std::vector<size_t> ids;
+        ids.reserve(vertices.size());
+        for (const WorldPt3& vertex : vertices)
+        {
+            ids.push_back(mesh.AddVertex(vertex));
+        }
+
+        auto addFace = [&](std::initializer_list<size_t> face)
+        {
+            mesh.AddFace_Begin();
+            for (const size_t index : face)
+            {
+                mesh.AddFace_Add(ids[index]);
+            }
+            mesh.AddFace_End(part);
+        };
+
+        addFace({0, 1, 2, 3}); // start
+        addFace({4, 7, 6, 5}); // end
+        addFace({0, 4, 5, 1}); // bottom edge side
+        addFace({3, 2, 6, 7}); // top edge side
+        addFace({1, 5, 6, 2}); // upper face
+        addFace({0, 3, 7, 4}); // lower face
+
+        mesh.GenerateMeshes();
+        const TMCObjectHandlesSTLArray& meshes = mesh.GetGeneratedMeshes();
+        if (meshes.empty()) { return nullptr; }
+
+        MCObjectHandle firstHandle = nullptr;
+        for (MCObjectHandle handle : meshes)
+        {
+            if (!handle) { continue; }
+            group.AddObject(handle);
+            gSDK->SetObjectClass(handle, GeneratedMemberClassID(memberType));
+            gSDK->SetFColorsByClass(handle);
+            gSDK->SetFPatByClass(handle);
+            gSDK->ResetObject(handle);
+            if (!firstHandle) { firstHandle = handle; }
+        }
+        return firstHandle;
+    }
+
     MCObjectHandle AddSlopedPlateMember(VWFC::VWObjects::VWGroupObj& group,
                                         const VWFC::Math::VWPoint2D& wallStart,
                                         const VWFC::Math::VWPoint2D& along,
@@ -1273,36 +1335,44 @@ namespace
     {
         if (alongLengthMm <= 0.0 || depthMm <= 0.0 || plateHeightMm <= 0.0) { return nullptr; }
 
-        const double halfDepth = depthMm / 2.0;
+        if (std::abs(axisEndZMm - axisStartZMm) <= 0.001)
+        {
+            return AddRectangularMember(group, wallStart, along, normal,
+                                        stationStartMm, alongLengthMm,
+                                        centerOffsetMm, depthMm,
+                                        axisStartZMm - plateHeightMm / 2.0,
+                                        plateHeightMm, memberType);
+        }
+
         const double slope = (axisEndZMm - axisStartZMm) / alongLengthMm;
         const double halfVerticalHeight =
             SlopedMemberVerticalHeight(plateHeightMm, slope) / 2.0;
-        const auto startFace =
-            WallPoint(wallStart, along, normal, stationStartMm, centerOffsetMm - halfDepth);
-        const auto endFace =
-            WallPoint(wallStart, along, normal, stationStartMm + alongLengthMm,
-                      centerOffsetMm - halfDepth);
+        const double startStation = stationStartMm;
+        const double endStation = stationStartMm + alongLengthMm;
+        const double nearOffset = centerOffsetMm - depthMm / 2.0;
+        const double farOffset = centerOffsetMm + depthMm / 2.0;
 
-        VWFC::Math::VWPolygon3D profile;
-        profile.AddVertex(
-            VWFC::Math::VWPoint3D(startFace.x, startFace.y, axisStartZMm - halfVerticalHeight));
-        profile.AddVertex(
-            VWFC::Math::VWPoint3D(startFace.x, startFace.y, axisStartZMm + halfVerticalHeight));
-        profile.AddVertex(
-            VWFC::Math::VWPoint3D(endFace.x, endFace.y, axisEndZMm + halfVerticalHeight));
-        profile.AddVertex(
-            VWFC::Math::VWPoint3D(endFace.x, endFace.y, axisEndZMm - halfVerticalHeight));
-        profile.SetClosed(true);
-
-        const VWFC::Math::VWPoint3D extrusionDir(normal.x * depthMm, normal.y * depthMm, 0.0);
-        VWFC::VWObjects::VWSolidObj member(profile, extrusionDir);
-        MCObjectHandle handle = member;
-        group.AddObject(handle);
-        gSDK->SetObjectClass(handle, GeneratedMemberClassID(memberType));
-        gSDK->SetFColorsByClass(handle);
-        gSDK->SetFPatByClass(handle);
-        gSDK->ResetObject(handle);
-        return handle;
+        return AddMeshPrismMember(
+            group,
+            {
+                WallPoint3D(wallStart, along, normal, startStation, nearOffset,
+                            axisStartZMm - halfVerticalHeight),
+                WallPoint3D(wallStart, along, normal, startStation, nearOffset,
+                            axisStartZMm + halfVerticalHeight),
+                WallPoint3D(wallStart, along, normal, startStation, farOffset,
+                            axisStartZMm + halfVerticalHeight),
+                WallPoint3D(wallStart, along, normal, startStation, farOffset,
+                            axisStartZMm - halfVerticalHeight),
+                WallPoint3D(wallStart, along, normal, endStation, nearOffset,
+                            axisEndZMm - halfVerticalHeight),
+                WallPoint3D(wallStart, along, normal, endStation, nearOffset,
+                            axisEndZMm + halfVerticalHeight),
+                WallPoint3D(wallStart, along, normal, endStation, farOffset,
+                            axisEndZMm + halfVerticalHeight),
+                WallPoint3D(wallStart, along, normal, endStation, farOffset,
+                            axisEndZMm - halfVerticalHeight),
+            },
+            memberType);
     }
 
     MCObjectHandle AddVerticalMember(VWFC::VWObjects::VWGroupObj& group,
@@ -1321,35 +1391,47 @@ namespace
             return nullptr;
         }
 
+        if (std::abs(bottomSlope) <= 0.001 && std::abs(topSlope) <= 0.001)
+        {
+            return AddRectangularMember(group, wallStart, along, normal,
+                                        stationMm - memberWidthMm / 2.0,
+                                        memberWidthMm, centerOffsetMm, depthMm,
+                                        centrelineBottomMm,
+                                        centrelineTopMm - centrelineBottomMm,
+                                        memberType);
+        }
+
         const double halfWidth = memberWidthMm / 2.0;
-        const double halfDepth = depthMm / 2.0;
-        const auto leftFace =
-            WallPoint(wallStart, along, normal, stationMm - halfWidth,
-                      centerOffsetMm - halfDepth);
-        const auto rightFace =
-            WallPoint(wallStart, along, normal, stationMm + halfWidth,
-                      centerOffsetMm - halfDepth);
+        const double bottomLeft = centrelineBottomMm - bottomSlope * halfWidth;
+        const double bottomRight = centrelineBottomMm + bottomSlope * halfWidth;
+        const double topLeft = centrelineTopMm - topSlope * halfWidth;
+        const double topRight = centrelineTopMm + topSlope * halfWidth;
+        const double leftStation = stationMm - halfWidth;
+        const double rightStation = stationMm + halfWidth;
+        const double nearOffset = centerOffsetMm - depthMm / 2.0;
+        const double farOffset = centerOffsetMm + depthMm / 2.0;
 
-        VWFC::Math::VWPolygon3D profile;
-        profile.AddVertex(VWFC::Math::VWPoint3D(
-            leftFace.x, leftFace.y, centrelineBottomMm - bottomSlope * halfWidth));
-        profile.AddVertex(VWFC::Math::VWPoint3D(
-            leftFace.x, leftFace.y, centrelineTopMm - topSlope * halfWidth));
-        profile.AddVertex(VWFC::Math::VWPoint3D(
-            rightFace.x, rightFace.y, centrelineTopMm + topSlope * halfWidth));
-        profile.AddVertex(VWFC::Math::VWPoint3D(
-            rightFace.x, rightFace.y, centrelineBottomMm + bottomSlope * halfWidth));
-        profile.SetClosed(true);
-
-        const VWFC::Math::VWPoint3D extrusionDir(normal.x * depthMm, normal.y * depthMm, 0.0);
-        VWFC::VWObjects::VWSolidObj member(profile, extrusionDir);
-        MCObjectHandle handle = member;
-        group.AddObject(handle);
-        gSDK->SetObjectClass(handle, GeneratedMemberClassID(memberType));
-        gSDK->SetFColorsByClass(handle);
-        gSDK->SetFPatByClass(handle);
-        gSDK->ResetObject(handle);
-        return handle;
+        return AddMeshPrismMember(
+            group,
+            {
+                WallPoint3D(wallStart, along, normal, leftStation, nearOffset,
+                            bottomLeft),
+                WallPoint3D(wallStart, along, normal, leftStation, nearOffset,
+                            topLeft),
+                WallPoint3D(wallStart, along, normal, leftStation, farOffset,
+                            topLeft),
+                WallPoint3D(wallStart, along, normal, leftStation, farOffset,
+                            bottomLeft),
+                WallPoint3D(wallStart, along, normal, rightStation, nearOffset,
+                            bottomRight),
+                WallPoint3D(wallStart, along, normal, rightStation, nearOffset,
+                            topRight),
+                WallPoint3D(wallStart, along, normal, rightStation, farOffset,
+                            topRight),
+                WallPoint3D(wallStart, along, normal, rightStation, farOffset,
+                            bottomRight),
+            },
+            memberType);
     }
 
     MCObjectHandle AddHorizontalMember(VWFC::VWObjects::VWGroupObj& group,
@@ -1362,30 +1444,10 @@ namespace
                                        const std::string& memberType)
     {
         if (alongLengthMm <= 0.0 || depthMm <= 0.0 || zHeightMm <= 0.0) { return nullptr; }
-
-        const double halfDepth = depthMm / 2.0;
-        const auto startFace =
-            WallPoint(wallStart, along, normal, stationStartMm, centerOffsetMm - halfDepth);
-        const auto endFace =
-            WallPoint(wallStart, along, normal, stationStartMm + alongLengthMm,
-                      centerOffsetMm - halfDepth);
-
-        VWFC::Math::VWPolygon3D profile;
-        profile.AddVertex(VWFC::Math::VWPoint3D(startFace.x, startFace.y, zStartMm));
-        profile.AddVertex(VWFC::Math::VWPoint3D(startFace.x, startFace.y, zStartMm + zHeightMm));
-        profile.AddVertex(VWFC::Math::VWPoint3D(endFace.x, endFace.y, zStartMm + zHeightMm));
-        profile.AddVertex(VWFC::Math::VWPoint3D(endFace.x, endFace.y, zStartMm));
-        profile.SetClosed(true);
-
-        const VWFC::Math::VWPoint3D extrusionDir(normal.x * depthMm, normal.y * depthMm, 0.0);
-        VWFC::VWObjects::VWSolidObj member(profile, extrusionDir);
-        MCObjectHandle handle = member;
-        group.AddObject(handle);
-        gSDK->SetObjectClass(handle, GeneratedMemberClassID(memberType));
-        gSDK->SetFColorsByClass(handle);
-        gSDK->SetFPatByClass(handle);
-        gSDK->ResetObject(handle);
-        return handle;
+        return AddRectangularMember(group, wallStart, along, normal,
+                                    stationStartMm, alongLengthMm,
+                                    centerOffsetMm, depthMm,
+                                    zStartMm, zHeightMm, memberType);
     }
 
     std::string MemberJson(const FrameMember& member)
@@ -1444,12 +1506,7 @@ namespace
                 std::string(parametric.GetParamString("IDLabel").GetCharPtr()) +
                 std::string(parametric.GetParamString("IDSuffix").GetCharPtr());
             opening.stationMm = brk.offset;
-            const double frameBottom =
-                Interpolate(frameBottomStart, frameBottomEnd, opening.stationMm, wallLength);
-            const double insertOffsetZ = EntityOffsetZ(insert);
-            const double openingBaseZ = std::abs(insertOffsetZ) > 0.001
-                                            ? insertOffsetZ
-                                            : frameBottom;
+            const double openingBaseZ = brk.symBreak.height;
             if (parametricName.EqualNoCase("Door"))
             {
                 if (!gSettings.detectDoors) { continue; }
