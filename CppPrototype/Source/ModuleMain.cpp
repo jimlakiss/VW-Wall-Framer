@@ -1897,6 +1897,13 @@ namespace
                              ? lintelBottomForOpening(opening)
                              : lintelTopForOpening(opening);
         };
+        auto openingHasSill = [&](const WallOpening& opening) {
+            if (opening.type != "WINDOW") { return false; }
+            const double localWallBottom =
+                Interpolate(wallProfile.bottomStartMm, wallProfile.bottomEndMm,
+                            opening.stationMm, wallLength);
+            return opening.bottomMm > localWallBottom + 0.001;
+        };
 
         auto splitVerticalRangeForOpenings =
             [&](double station, double memberWidth, double bottom, double top,
@@ -1930,7 +1937,7 @@ namespace
                         {
                             const double sillUnderside =
                                 opening.bottomMm -
-                                (opening.type == "WINDOW" ? gSettings.sillHeightMm : 0.0);
+                                (openingHasSill(opening) ? gSettings.sillHeightMm : 0.0);
                             segments[0].topMm = std::min(segments[0].topMm, sillUnderside);
                         }
                         else
@@ -1962,7 +1969,7 @@ namespace
                     std::vector<VerticalSegment> remaining;
                     const double framedOpeningBottom =
                         opening.bottomMm -
-                        (opening.type == "WINDOW" ? gSettings.sillHeightMm : 0.0);
+                        (openingHasSill(opening) ? gSettings.sillHeightMm : 0.0);
                     const double framedOpeningTop = verticalBottomAboveLintel(opening);
                     for (const VerticalSegment& segment : segments)
                     {
@@ -2222,7 +2229,7 @@ namespace
                           "Height", "Length", "Width");
             }
 
-            if (opening.type == "WINDOW")
+            if (openingHasSill(opening))
             {
                 addMember(nextMemberName(gSettings.windowSillPrefix), "SILL", openingLeft, opening.widthMm,
                           opening.bottomMm - gSettings.sillHeightMm, gSettings.sillHeightMm,
@@ -2233,7 +2240,8 @@ namespace
             }
 
             const double upperJackBottom = verticalBottomAboveLintel(opening);
-            const double lowerJackTop = opening.bottomMm - gSettings.sillHeightMm;
+            const double lowerJackTop =
+                opening.bottomMm - (openingHasSill(opening) ? gSettings.sillHeightMm : 0.0);
             std::vector<double> lowerJackStations;
             auto addLowerJack = [&](double station) {
                 const bool overlapsExisting =
