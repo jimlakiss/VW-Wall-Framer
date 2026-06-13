@@ -152,12 +152,12 @@ namespace
         }
     }
 
-    Sint32 PositiveIntegerOrDefault(const TXString& value, Sint32 fallback)
+    Sint32 NonNegativeIntegerOrDefault(const TXString& value, Sint32 fallback)
     {
         if (value.IsEmpty()) { return fallback; }
         try
         {
-            return std::max<Sint32>(1, static_cast<Sint32>(std::stoi(value.GetCharPtr())));
+            return std::max<Sint32>(0, static_cast<Sint32>(std::stoi(value.GetCharPtr())));
         }
         catch (...)
         {
@@ -1555,7 +1555,7 @@ namespace
                 PositiveDoubleOrDefault(storedWidth, gSettings.headerWidthMm);
             const double persistedHeight =
                 PositiveDoubleOrDefault(storedHeight, gSettings.headerHeightMm);
-            const Sint32 persistedCount = PositiveIntegerOrDefault(storedCount, 1);
+            const Sint32 persistedCount = NonNegativeIntegerOrDefault(storedCount, 1);
             opening.lintelWidthMm =
                 overrideIt != gOpeningLintelOverrides.end()
                     ? overrideIt->second.widthMm
@@ -1869,13 +1869,15 @@ namespace
         };
 
         auto lowerLedgerHeightForOpening = [&](const WallOpening& opening) {
-            return opening.lowerLedger &&
+            return opening.lintelCount > 0 &&
+                           opening.lowerLedger &&
                            opening.lintelHeightMm > gSettings.ledgerTriggerHeightMm
                        ? kStudWidthMm
                        : 0.0;
         };
         auto upperLedgerHeightForOpening = [&](const WallOpening& opening) {
-            return opening.upperLedger &&
+            return opening.lintelCount > 0 &&
+                           opening.upperLedger &&
                            opening.lintelHeightMm > gSettings.ledgerTriggerHeightMm
                        ? kStudWidthMm
                        : 0.0;
@@ -1890,6 +1892,7 @@ namespace
             return lintelTopForOpening(opening) + upperLedgerHeightForOpening(opening);
         };
         auto verticalBottomAboveLintel = [&](const WallOpening& opening) {
+            if (opening.lintelCount <= 0) { return opening.topMm; }
             return upperLedgerHeightForOpening(opening) > 0.0
                        ? lintelAssemblyTopForOpening(opening)
                        : opening.continueJackStudsToLintelUnderside ||
@@ -2315,30 +2318,78 @@ namespace
         {
             const double candidateLeft = candidate.stationMm - kStudWidthMm / 2.0;
             const double candidateRight = candidate.stationMm + kStudWidthMm / 2.0;
-            const bool overlapsAccepted =
-                std::any_of(acceptedVerticalMembers.begin(), acceptedVerticalMembers.end(),
-                            [&](const PendingVerticalMember& accepted) {
-                                const double acceptedLeft =
-                                    accepted.stationMm - kStudWidthMm / 2.0;
-                                const double acceptedRight =
-                                    accepted.stationMm + kStudWidthMm / 2.0;
-                                const bool verticalOverlap =
-                                    candidate.zStartMm <
-                                        accepted.zStartMm + accepted.zHeightMm - 0.001 &&
-                                    candidate.zStartMm + candidate.zHeightMm >
-                                        accepted.zStartMm + 0.001;
-                                return candidateLeft < acceptedRight - 0.001 &&
-                                       candidateRight > acceptedLeft + 0.001 &&
-                                       verticalOverlap;
-                            });
-            if (gSettings.resolveStudOverlaps && overlapsAccepted) { continue; }
+            std::vector<VerticalSegment> remainingSegments{
+                { candidate.centrelineBottomMm, candidate.centrelineTopMm }
+            };
+            if (gSettings.resolveStudOverlaps)
+            {
+                for (const PendingVerticalMember& accepted : acceptedVerticalMembers)
+                {
+                    const double acceptedLeft = accepted.stationMm - kStudWidthMm / 2.0;
+                    const double acceptedRight = accepted.stationMm + kStudWidthMm / 2.0;
+                    if (candidateLeft >= acceptedRight - 0.001 ||
+                        candidateRight <= acceptedLeft + 0.001)
+                    {
+                        continue;
+                    }
 
-            acceptedVerticalMembers.push_back(candidate);
-            addVerticalMember(nextMemberName(MemberPrefix(candidate.type)), candidate.type,
-                              candidate.stationMm, candidate.centrelineBottomMm,
-                              candidate.centrelineTopMm, candidate.bottomSlope,
-                              candidate.topSlope);
-            ++result.studCount;
+                    std::vector<VerticalSegment> nextSegments;
+                    for (const VerticalSegment& segment : remainingSegments)
+                    {
+                        if (segment.topMm <= accepted.centrelineBottomMm + 0.001 ||
+                            segment.bottomMm >= accepted.centrelineTopMm - 0.001)
+                        {
+                            nextSegments.push_back(segment);
+                            continue;
+                        }
+                        if (segment.bottomMm < accepted.centrelineBottomMm - 0.001)
+                        {
+                            nextSegments.push_back(
+                                { segment.bottomMm, accepted.centrelineBottomMm });
+                        }
+                        if (segment.topMm > accepted.centrelineTopMm + 0.001)
+                        {
+                            nextSegments.push_back(
+                                { accepted.centrelineTopMm, segment.topMm });
+                        }
+                    }
+                    remainingSegments = nextSegments;
+                    if (remainingSegments.empty()) { break; }
+                }
+            }
+
+            for (const VerticalSegment& segment : remainingSegments)
+            {
+                if (segment.topMm <= segment.bottomMm + 0.001) { continue; }
+                PendingVerticalMember acceptedCandidate = candidate;
+                acceptedCandidate.centrelineBottomMm = segment.bottomMm;
+                acceptedCandidate.centrelineTopMm = segment.topMm;
+                acceptedCandidate.bottomSlope =
+                    std::abs(segment.bottomMm - candidate.centrelineBottomMm) < 0.001
+                        ? candidate.bottomSlope
+                        : 0.0;
+                acceptedCandidate.topSlope =
+                    std::abs(segment.topMm - candidate.centrelineTopMm) < 0.001
+                        ? candidate.topSlope
+                        : 0.0;
+                acceptedCandidate.zStartMm =
+                    GrossVerticalBottom(segment.bottomMm, kStudWidthMm,
+                                        acceptedCandidate.bottomSlope);
+                acceptedCandidate.zHeightMm =
+                    GrossVerticalLength(segment.topMm - segment.bottomMm, kStudWidthMm,
+                                        acceptedCandidate.bottomSlope,
+                                        acceptedCandidate.topSlope);
+                acceptedCandidate.memberLengthMm = acceptedCandidate.zHeightMm;
+
+                acceptedVerticalMembers.push_back(acceptedCandidate);
+                addVerticalMember(nextMemberName(MemberPrefix(acceptedCandidate.type)),
+                                  acceptedCandidate.type, acceptedCandidate.stationMm,
+                                  acceptedCandidate.centrelineBottomMm,
+                                  acceptedCandidate.centrelineTopMm,
+                                  acceptedCandidate.bottomSlope,
+                                  acceptedCandidate.topSlope);
+                ++result.studCount;
+            }
         }
 
         struct VerticalEdge
@@ -2976,18 +3027,18 @@ namespace
             : fTabs(100), fWallPane(101), fMembersPane(102), fOpeningsPane(103),
               fNoggingsPane(104), fAdvancedPane(105),
               fComponentLabel(110), fComponentEdit(111), fClassLabel(112), fClassEdit(113),
-              fStudWidthLabel(120), fStudWidthEdit(121), fStudSpacingLabel(122),
-              fStudSpacingEdit(123), fPlateHeightLabel(124), fPlateHeightEdit(125),
-              fBottomPlateCountLabel(126), fBottomPlateCountEdit(127),
-              fTopPlateCountLabel(128), fTopPlateCountEdit(129),
-              fHeaderHeightLabel(130), fHeaderHeightEdit(131),
+              fStudWidthLabel(120), fStudWidthEdit(121), fStudSpacingLabel(135),
+              fStudSpacingEdit(136), fPlateHeightLabel(123), fPlateHeightEdit(125),
+              fBottomPlateCountLabel(137), fBottomPlateCountEdit(138),
+              fTopPlateCountLabel(203), fTopPlateCountEdit(139),
+              fHeaderHeightLabel(204), fHeaderHeightEdit(134),
               fHeaderWidthLabel(132), fHeaderWidthEdit(133),
               fDetectDoors(140), fDetectWindows(141),
               fGenerateUpperLedgers(202), fGenerateLedgers(195), fLedgerTriggerHeightLabel(198),
               fLedgerTriggerHeightEdit(199), fContinueJackStudsToLintelUnderside(200),
               fJambStudCountLabel(142), fJambStudCountEdit(143),
               fTrimmerStudCountLabel(144), fTrimmerStudCountEdit(145),
-              fGenerateNoggings(150), fNoggingHeightLabel(151), fNoggingHeightEdit(152),
+              fGenerateNoggings(150), fNoggingHeightLabel(126), fNoggingHeightEdit(128),
               fNoggingCentresLabel(153), fNoggingCentresEdit(154),
               fNoggingStaggerLabel(155), fNoggingStaggerEdit(156),
               fGenerateCornerStuds(160), fResolveStudOverlaps(161),
@@ -3006,8 +3057,8 @@ namespace
               fLedgerPrefixLabel(196), fLedgerPrefixEdit(197),
               fOpeningList(201),
               fProfileMemberHeader(176), fProfileWidthHeader(177), fProfileHeightHeader(178),
-              fStudDepthEdit(179), fPlateWidthEdit(180), fNoggingWidthEdit(181),
-              fSillLabel(182), fSillWidthEdit(183), fSillHeightEdit(184)
+              fStudDepthEdit(122), fPlateWidthEdit(124), fNoggingWidthEdit(127),
+              fSillLabel(129), fSillWidthEdit(130), fSillHeightEdit(131)
         {
             fSettings = gSettings;
             fOpeningRows = FindSelectedWallOpenings(walls);
@@ -3090,24 +3141,24 @@ namespace
                 !fStudWidthLabel.CreateControl(this, "Stud:", 18) ||
                 !fStudWidthEdit.CreateControl(this, fSettings.studWidthMm, 14, VWEditRealCtrl::kEditControlDimension) ||
                 !fStudDepthEdit.CreateControl(this, fSettings.studDepthMm, 14, VWEditRealCtrl::kEditControlDimension) ||
-                !fStudSpacingLabel.CreateControl(this, "Stud centres:", 28) ||
-                !fStudSpacingEdit.CreateControl(this, fSettings.studSpacingMm, 14, VWEditRealCtrl::kEditControlDimension) ||
                 !fPlateHeightLabel.CreateControl(this, "Plate:", 18) ||
                 !fPlateWidthEdit.CreateControl(this, fSettings.plateWidthMm, 14, VWEditRealCtrl::kEditControlDimension) ||
                 !fPlateHeightEdit.CreateControl(this, fSettings.plateHeightMm, 14, VWEditRealCtrl::kEditControlDimension) ||
-                !fBottomPlateCountLabel.CreateControl(this, "Bottom plate count:", 28) ||
-                !fBottomPlateCountEdit.CreateControl(this, fSettings.bottomPlateCount, 14) ||
-                !fTopPlateCountLabel.CreateControl(this, "Top plate count:", 28) ||
-                !fTopPlateCountEdit.CreateControl(this, fSettings.topPlateCount, 14) ||
-                !fHeaderHeightLabel.CreateControl(this, "Lintel:", 18) ||
-                !fHeaderHeightEdit.CreateControl(this, fSettings.headerHeightMm, 14, VWEditRealCtrl::kEditControlDimension) ||
-                !fHeaderWidthEdit.CreateControl(this, fSettings.headerWidthMm, 14, VWEditRealCtrl::kEditControlDimension) ||
                 !fNoggingHeightLabel.CreateControl(this, "Nogging:", 18) ||
                 !fNoggingWidthEdit.CreateControl(this, fSettings.noggingWidthMm, 14, VWEditRealCtrl::kEditControlDimension) ||
                 !fNoggingHeightEdit.CreateControl(this, fSettings.noggingHeightMm, 14, VWEditRealCtrl::kEditControlDimension) ||
                 !fSillLabel.CreateControl(this, "Window sill:", 18) ||
                 !fSillWidthEdit.CreateControl(this, fSettings.sillWidthMm, 14, VWEditRealCtrl::kEditControlDimension) ||
-                !fSillHeightEdit.CreateControl(this, fSettings.sillHeightMm, 14, VWEditRealCtrl::kEditControlDimension))
+                !fSillHeightEdit.CreateControl(this, fSettings.sillHeightMm, 14, VWEditRealCtrl::kEditControlDimension) ||
+                !fHeaderHeightLabel.CreateControl(this, "Lintel:", 18) ||
+                !fHeaderWidthEdit.CreateControl(this, fSettings.headerWidthMm, 14, VWEditRealCtrl::kEditControlDimension) ||
+                !fHeaderHeightEdit.CreateControl(this, fSettings.headerHeightMm, 14, VWEditRealCtrl::kEditControlDimension) ||
+                !fStudSpacingLabel.CreateControl(this, "Stud centres:", 28) ||
+                !fStudSpacingEdit.CreateControl(this, fSettings.studSpacingMm, 14, VWEditRealCtrl::kEditControlDimension) ||
+                !fBottomPlateCountLabel.CreateControl(this, "Bottom plate count:", 28) ||
+                !fBottomPlateCountEdit.CreateControl(this, fSettings.bottomPlateCount, 14) ||
+                !fTopPlateCountLabel.CreateControl(this, "Top plate count:", 28) ||
+                !fTopPlateCountEdit.CreateControl(this, fSettings.topPlateCount, 14))
             {
                 return false;
             }
@@ -3255,13 +3306,13 @@ namespace
             this->AddDDX_EditText(111, &fSettings.componentName);
             this->AddDDX_EditText(113, &fSettings.generatedClassName);
             this->AddDDX_EditReal(121, &fSettings.studWidthMm, VWEditRealCtrl::kEditControlDimension);
-            this->AddDDX_EditReal(179, &fSettings.studDepthMm, VWEditRealCtrl::kEditControlDimension);
-            this->AddDDX_EditReal(123, &fSettings.studSpacingMm, VWEditRealCtrl::kEditControlDimension);
+            this->AddDDX_EditReal(122, &fSettings.studDepthMm, VWEditRealCtrl::kEditControlDimension);
+            this->AddDDX_EditReal(136, &fSettings.studSpacingMm, VWEditRealCtrl::kEditControlDimension);
             this->AddDDX_EditReal(125, &fSettings.plateHeightMm, VWEditRealCtrl::kEditControlDimension);
-            this->AddDDX_EditReal(180, &fSettings.plateWidthMm, VWEditRealCtrl::kEditControlDimension);
-            this->AddDDX_EditInteger(127, &fSettings.bottomPlateCount);
-            this->AddDDX_EditInteger(129, &fSettings.topPlateCount);
-            this->AddDDX_EditReal(131, &fSettings.headerHeightMm, VWEditRealCtrl::kEditControlDimension);
+            this->AddDDX_EditReal(124, &fSettings.plateWidthMm, VWEditRealCtrl::kEditControlDimension);
+            this->AddDDX_EditInteger(138, &fSettings.bottomPlateCount);
+            this->AddDDX_EditInteger(139, &fSettings.topPlateCount);
+            this->AddDDX_EditReal(134, &fSettings.headerHeightMm, VWEditRealCtrl::kEditControlDimension);
             this->AddDDX_EditReal(133, &fSettings.headerWidthMm, VWEditRealCtrl::kEditControlDimension);
             this->AddDDX_CheckButton(140, &fSettings.detectDoors);
             this->AddDDX_CheckButton(141, &fSettings.detectWindows);
@@ -3272,10 +3323,10 @@ namespace
             this->AddDDX_EditInteger(143, &fSettings.jambStudCount);
             this->AddDDX_EditInteger(145, &fSettings.trimmerStudCount);
             this->AddDDX_CheckButton(150, &fSettings.generateNoggings);
-            this->AddDDX_EditReal(152, &fSettings.noggingHeightMm, VWEditRealCtrl::kEditControlDimension);
-            this->AddDDX_EditReal(181, &fSettings.noggingWidthMm, VWEditRealCtrl::kEditControlDimension);
-            this->AddDDX_EditReal(183, &fSettings.sillWidthMm, VWEditRealCtrl::kEditControlDimension);
-            this->AddDDX_EditReal(184, &fSettings.sillHeightMm, VWEditRealCtrl::kEditControlDimension);
+            this->AddDDX_EditReal(128, &fSettings.noggingHeightMm, VWEditRealCtrl::kEditControlDimension);
+            this->AddDDX_EditReal(127, &fSettings.noggingWidthMm, VWEditRealCtrl::kEditControlDimension);
+            this->AddDDX_EditReal(130, &fSettings.sillWidthMm, VWEditRealCtrl::kEditControlDimension);
+            this->AddDDX_EditReal(131, &fSettings.sillHeightMm, VWEditRealCtrl::kEditControlDimension);
             this->AddDDX_EditReal(154, &fSettings.noggingCentresMm, VWEditRealCtrl::kEditControlDimension);
             this->AddDDX_EditReal(156, &fSettings.noggingStaggerMm, VWEditRealCtrl::kEditControlDimension);
             this->AddDDX_CheckButton(160, &fSettings.generateCornerStuds);
@@ -3454,7 +3505,7 @@ namespace
                     eventArgs.SetInvalidEditCompletionData();
                     return;
                 }
-                if (parsed <= 0)
+                if (parsed < 0)
                 {
                     eventArgs.SetInvalidEditCompletionData();
                     return;
