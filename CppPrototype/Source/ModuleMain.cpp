@@ -571,6 +571,7 @@ namespace
         size_t index = 0;
         TXString name;
         TXString className;
+        TXString matchMode = "COMPONENT_NAME";
         double depthMm = 0.0;
         double centerOffsetMm = 0.0;
         double topOffsetMm = 0.0;
@@ -868,10 +869,31 @@ namespace
         return result;
     }
 
+    std::string TrimmedLower(const TXString& value)
+    {
+        std::string result = Lower(value);
+        const auto first = std::find_if_not(result.begin(), result.end(), [](unsigned char ch) {
+            return std::isspace(ch) != 0;
+        });
+        const auto last = std::find_if_not(result.rbegin(), result.rend(), [](unsigned char ch) {
+            return std::isspace(ch) != 0;
+        }).base();
+        if (first >= last) { return ""; }
+        return std::string(first, last);
+    }
+
     std::vector<FramingComponent> FindFramingComponents(
         MCObjectHandle wall, const VWFC::VWObjects::VWWallObj& wallObj)
     {
-        std::vector<FramingComponent> results;
+        struct Candidate
+        {
+            FramingComponent component;
+            bool exactName = false;
+            bool timberFallback = false;
+        };
+
+        std::vector<Candidate> candidates;
+        const std::string configuredName = TrimmedLower(gSettings.componentName);
         double runningOffset = -wallObj.GetWidth() / 2.0;
         for (size_t i = 0; i < wallObj.GetComponentCount(); ++i)
         {
@@ -879,13 +901,23 @@ namespace
             TXString className;
             gSDK->ClassIDToName(info.componentClass, className);
             const double centerOffset = -(runningOffset + info.width / 2.0);
-            if (Lower(info.componentName) == Lower(gSettings.componentName))
+            const std::string componentName = TrimmedLower(info.componentName);
+            const std::string componentClassName = TrimmedLower(className);
+            const bool exactName =
+                !configuredName.empty() && componentName == configuredName;
+            const bool timberFallback =
+                componentName.find("timber frame") != std::string::npos ||
+                componentName.find("timber stud") != std::string::npos ||
+                componentClassName.find("timber framing") != std::string::npos ||
+                componentClassName.find("timber frame") != std::string::npos;
+            if (exactName || timberFallback)
             {
                 FramingComponent result;
                 result.found = true;
                 result.index = i;
                 result.name = info.componentName;
                 result.className = className;
+                result.matchMode = exactName ? "COMPONENT_NAME" : "TIMBER_FRAME_FALLBACK";
                 result.depthMm = info.width;
                 result.centerOffsetMm = centerOffset;
                 WorldCoord offset = 0.0;
@@ -897,9 +929,21 @@ namespace
                 {
                     result.bottomOffsetMm = offset;
                 }
-                results.push_back(result);
+                candidates.push_back({ result, exactName, timberFallback });
             }
             runningOffset += info.width;
+        }
+
+        const bool hasExact =
+            std::any_of(candidates.begin(), candidates.end(), [](const Candidate& candidate) {
+                return candidate.exactName;
+            });
+        std::vector<FramingComponent> results;
+        for (const Candidate& candidate : candidates)
+        {
+            if (hasExact && !candidate.exactName) { continue; }
+            if (!hasExact && !candidate.timberFallback) { continue; }
+            results.push_back(candidate.component);
         }
 
         return results;
@@ -1040,6 +1084,28 @@ namespace
             result.junctionDecisions.push_back(out.str());
         };
 
+        auto addCornerStudStation = [&](double station) {
+            const double halfStudWidth = gSettings.studWidthMm / 2.0;
+            if (!gSettings.generateCornerStuds) { return false; }
+            if (station < result.startStationMm + halfStudWidth - 0.001 ||
+                station > result.endStationMm - halfStudWidth + 0.001)
+            {
+                return false;
+            }
+
+            const bool duplicate =
+                std::any_of(result.cornerStudStationsMm.begin(),
+                            result.cornerStudStationsMm.end(),
+                            [&](double existing) {
+                                return std::abs(existing - station) <
+                                       gSettings.studWidthMm - 0.001;
+                            });
+            if (duplicate) { return false; }
+
+            result.cornerStudStationsMm.push_back(station);
+            return true;
+        };
+
         for (size_t otherIndex = 0; otherIndex < contextWalls.size(); ++otherIndex)
         {
             if (otherIndex == wallIndex) { continue; }
@@ -1127,6 +1193,7 @@ namespace
                     const bool thisWallRunsThroughCorner =
                         ThisWallRunsThroughJunction(wall, contextWalls[otherIndex],
                                                     wallLength, otherLength);
+                    bool addedCornerStud = false;
                     if (startSharesEndpoint)
                     {
                         const double targetStart =
@@ -1135,6 +1202,12 @@ namespace
                                 : junctionStation + halfOtherDepth;
                         result.startStationMm =
                             targetStart;
+                        if (thisWallRunsThroughCorner)
+                        {
+                            addedCornerStud =
+                                addCornerStudStation(junctionStation + halfOtherDepth +
+                                                     gSettings.studWidthMm / 2.0);
+                        }
                     }
                     if (endSharesEndpoint)
                     {
@@ -1144,6 +1217,13 @@ namespace
                                 : junctionStation - halfOtherDepth;
                         result.endStationMm =
                             targetEnd;
+                        if (thisWallRunsThroughCorner)
+                        {
+                            addedCornerStud =
+                                addCornerStudStation(junctionStation - halfOtherDepth -
+                                                     gSettings.studWidthMm / 2.0) ||
+                                addedCornerStud;
+                        }
                     }
                     addDecision(contextWalls[otherIndex], otherComponent,
                                 "corner",
@@ -1151,10 +1231,70 @@ namespace
                                     ? "both"
                                     : (startSharesEndpoint ? "start" : "end"),
                                 thisWallRunsThroughCorner
-                                    ? "l_junction_longer_or_tiebreaker_frame_runs_through"
+                                    ? (addedCornerStud
+                                           ? "l_junction_frame_runs_through_added_lining_stud"
+                                           : "l_junction_frame_runs_through")
                                     : "l_junction_abutting_frame_trims_to_through_frame_face",
                                 junctionStation, otherJunctionStation,
                                 beforeStart, beforeEnd);
+                    continue;
+                }
+
+                auto otherEndpointInsideThisComponentRun =
+                    [&](const VWFC::Math::VWPoint2D& point, double& thisStation) {
+                        const VWFC::Math::VWPoint2D delta(point.x - componentStart.x,
+                                                         point.y - componentStart.y);
+                        thisStation = Dot(delta, along);
+                        const double thisOffset = Dot(delta, normal);
+                        return thisStation > 1.0 && thisStation < wallLength - 1.0 &&
+                               std::abs(thisOffset) <= component.depthMm / 2.0 + 1.0;
+                    };
+
+                double otherStartThisStation = 0.0;
+                double otherEndThisStation = 0.0;
+                const bool otherStartInsideThis =
+                    otherEndpointInsideThisComponentRun(otherComponentStart,
+                                                        otherStartThisStation);
+                const bool otherEndInsideThis =
+                    otherEndpointInsideThisComponentRun(otherComponentEnd,
+                                                        otherEndThisStation);
+                if (otherStartInsideThis || otherEndInsideThis)
+                {
+                    double junctionStation = 0.0;
+                    double otherJunctionStation = 0.0;
+                    if (!LineIntersectionStations(componentStart, along,
+                                                  otherComponentStart, otherAlong,
+                                                  junctionStation, otherJunctionStation))
+                    {
+                        continue;
+                    }
+
+                    const double teeEndpointTolerance =
+                        std::max(component.depthMm, otherComponent.depthMm) / 2.0 + 1.0;
+                    const bool junctionAtOtherEndpoint =
+                        (otherJunctionStation >= -teeEndpointTolerance &&
+                         otherJunctionStation <= teeEndpointTolerance) ||
+                        (otherJunctionStation >= otherLength - teeEndpointTolerance &&
+                         otherJunctionStation <= otherLength + teeEndpointTolerance);
+                    if (junctionStation > 1.0 &&
+                        junctionStation < wallLength - 1.0 &&
+                        junctionAtOtherEndpoint)
+                    {
+                        const bool addedLeft =
+                            addCornerStudStation(junctionStation - halfOtherDepth -
+                                                 gSettings.studWidthMm / 2.0);
+                        const bool addedRight =
+                            addCornerStudStation(junctionStation + halfOtherDepth +
+                                                 gSettings.studWidthMm / 2.0);
+                        addDecision(contextWalls[otherIndex], otherComponent,
+                                    "tee",
+                                    "through",
+                                    addedLeft || addedRight
+                                        ? "main_wall_added_t_junction_lining_pair"
+                                        : "main_wall_t_junction_lining_pair_not_added",
+                                    junctionStation, otherJunctionStation,
+                                    beforeStart, beforeEnd);
+                    }
                     continue;
                 }
 
@@ -1653,7 +1793,7 @@ namespace
         result.group = group;
         result.frameUUID = NewUUID().c_str();
         result.hostUUID = EnsureHostUUID(wall);
-        result.sourceComponentMode = "COMPONENT_NAME";
+        result.sourceComponentMode = component.matchMode;
         result.sourceComponentRef = ComponentSourceRef(component, includeComponentIndex);
         result.wallLengthMm = wallLength;
         result.wallHeightMm = frameHeight;
@@ -2713,7 +2853,6 @@ namespace
             const bool hasBottomOffset = gSDK->GetComponentOffsetFromWallBottom(wall, static_cast<short>(i), bottomOffset);
             const bool hasFollowsTop = gSDK->GetComponentFollowTopWallPeaks(wall, static_cast<short>(i), followsTop);
             const bool hasFollowsBottom = gSDK->GetComponentFollowBottomWallPeaks(wall, static_cast<short>(i), followsBottom);
-
             out << "{\"index\":" << i
                 << ",\"name\":" << JsonString(info.componentName)
                 << ",\"class_index\":" << info.componentClass
@@ -2883,6 +3022,8 @@ namespace
             const FramingComponent& component = components[i];
             out << "{\"component_ref\":" << JsonString(ComponentSourceRef(component, components.size() > 1))
                 << ",\"component_index\":" << component.index
+                << ",\"component_match_mode\":" << JsonString(component.matchMode)
+                << ",\"configured_component_name\":" << JsonString(gSettings.componentName)
                 << ",\"component_depth_mm\":" << Num(component.depthMm)
                 << ",\"component_center_offset_mm\":" << Num(component.centerOffsetMm)
                 << ",\"junctions\":" << PlateExtentsJson(FindPlateExtents(wall, contextWalls, component))
